@@ -5,13 +5,20 @@ import '../core/session.dart';
 import '../data/club_admin.dart';
 import '../models/models.dart';
 import '../widgets/estado_vacio.dart';
+import '../repositories/repositories.dart';
+import 'equipo_liga_screen.dart';
 import 'rival_plantilla_screen.dart';
 
-/// Equipos contrarios registrados por el club.
+/// Los equipos contra los que se puede jugar.
 ///
-/// Al crear uno se pregunta lo unico que importa: ¿tienes los datos de
-/// sus jugadores o no? Si no los tienes, se inventa la plantilla y queda
-/// marcada como inventada.
+/// Dos listas, porque son dos cosas distintas:
+///
+///   * **Los equipos de tu liga.** Salen todos, completos o no: saber a
+///     quién le faltan jugadores es parte de saber a quién puedes retar.
+///     Su plantilla se abre cuando el partido queda concretado.
+///   * **Otros rivales.** Los que el club carga a mano para amistosos
+///     contra gente que no está en la app. Si no tienes sus datos, se
+///     inventa la plantilla y queda marcada como inventada.
 class RivalesScreen extends StatefulWidget {
   const RivalesScreen({super.key, required this.admin, this.session});
 
@@ -24,22 +31,41 @@ class RivalesScreen extends StatefulWidget {
 
 class _RivalesScreenState extends State<RivalesScreen> {
   late Future<List<Rival>> _carga = widget.admin.equiposRivales();
+  late Future<List<EquipoDelGrupo>> _liga = _cargarLiga();
+
+  Future<List<EquipoDelGrupo>> _cargarLiga() async {
+    final g = widget.session?.situacion.groupId;
+    if (g == null) return const [];
+    try {
+      return await const ChallengesRepository().equiposParaRetar(g);
+    } catch (_) {
+      return const [];
+    }
+  }
 
   bool get _puedeEditar =>
-      (widget.session?.puedeEditarPlantilla ?? false) && widget.admin.disponible;
+      (widget.session?.puedeEditarPlantilla ?? false) &&
+      widget.admin.disponible;
 
   Future<void> _recargar() async {
     final futuro = widget.admin.equiposRivales();
-    setState(() => _carga = futuro);
+    final liga = _cargarLiga();
+    setState(() {
+      _carga = futuro;
+      _liga = liga;
+    });
     await futuro.catchError((_) => <Rival>[]);
+    await liga;
   }
 
   void _avisar(String m, {bool error = false}) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(m),
-      backgroundColor: error ? Colors.red.shade700 : Colors.green.shade700,
-    ));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(m),
+        backgroundColor: error ? Colors.red.shade700 : Colors.green.shade700,
+      ),
+    );
   }
 
   Future<void> _crear() async {
@@ -47,7 +73,9 @@ class _RivalesScreenState extends State<RivalesScreen> {
       context: context,
       isScrollControlled: true,
       builder: (context) => Padding(
-        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom,
+        ),
         child: const _FormularioRival(),
       ),
     );
@@ -55,10 +83,15 @@ class _RivalesScreenState extends State<RivalesScreen> {
 
     final (nombre, inventar) = resultado;
     try {
-      await widget.admin.crearRival(nombre: nombre, inventarPlantilla: inventar);
-      _avisar(inventar
-          ? '$nombre creado con una plantilla inventada.'
-          : '$nombre creado. Agrega sus jugadores cuando los tengas.');
+      await widget.admin.crearRival(
+        nombre: nombre,
+        inventarPlantilla: inventar,
+      );
+      _avisar(
+        inventar
+            ? '$nombre creado con una plantilla inventada.'
+            : '$nombre creado. Agrega sus jugadores cuando los tengas.',
+      );
       await _recargar();
     } catch (_) {
       _avisar('No se pudo crear el rival. Revisa tus permisos.', error: true);
@@ -98,8 +131,10 @@ class _RivalesScreenState extends State<RivalesScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('Equipos rivales',
-            style: GoogleFonts.poppins(fontWeight: FontWeight.bold)),
+        title: Text(
+          'Equipos rivales',
+          style: GoogleFonts.poppins(fontWeight: FontWeight.bold),
+        ),
         backgroundColor: const Color(0xFF1B5E20),
         foregroundColor: Colors.white,
       ),
@@ -118,50 +153,95 @@ class _RivalesScreenState extends State<RivalesScreen> {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
           }
-          if (snapshot.hasError) {
-            return EstadoVacio(
-              icono: Icons.cloud_off,
-              titulo: 'No se pudieron cargar los rivales',
-              mensaje: 'Revisa tu conexión.',
-              onReintentar: _recargar,
-            );
-          }
 
-          final rivales = snapshot.data ?? const <Rival>[];
-          if (rivales.isEmpty) {
-            return EstadoVacio(
-              icono: Icons.shield_outlined,
-              titulo: 'Todavía no hay rivales',
-              mensaje: _puedeEditar
-                  ? 'Crea el primero. Si no sabes quiénes juegan, la app '
-                      'inventa la plantilla por ti.'
-                  : 'Aquí aparecerán los equipos contra los que juega el club.',
-            );
-          }
+          // Que fallen los rivales cargados a mano no puede tapar los
+          // equipos de la liga, que es lo que casi siempre se viene a ver.
+          final rivales = snapshot.hasError
+              ? const <Rival>[]
+              : (snapshot.data ?? const <Rival>[]);
 
           return RefreshIndicator(
             onRefresh: _recargar,
-            child: ListView.builder(
-              padding: const EdgeInsets.fromLTRB(12, 12, 12, 88),
-              itemCount: rivales.length,
-              itemBuilder: (context, i) => _TarjetaRival(
-                rival: rivales[i],
-                puedeBorrar: _puedeEditar,
-                onAbrir: () async {
-                  await Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => RivalPlantillaScreen(
-                        rival: rivales[i],
-                        admin: widget.admin,
-                        session: widget.session,
+            child: FutureBuilder<List<EquipoDelGrupo>>(
+              future: _liga,
+              builder: (context, snapLiga) {
+                final equipos = snapLiga.data ?? const <EquipoDelGrupo>[];
+
+                if (equipos.isEmpty && rivales.isEmpty) {
+                  return ListView(
+                    children: [
+                      const SizedBox(height: 60),
+                      EstadoVacio(
+                        icono: Icons.shield_outlined,
+                        titulo: 'Todavía no hay rivales',
+                        mensaje: _puedeEditar
+                            ? 'Cuando haya más equipos en tu liga aparecerán '
+                                  'aquí. También puedes cargar uno a mano.'
+                            : 'Aquí aparecerán los equipos contra los que '
+                                  'juega el club.',
                       ),
-                    ),
+                    ],
                   );
-                  await _recargar();
-                },
-                onBorrar: () => _eliminar(rivales[i]),
-              ),
+                }
+
+                return ListView(
+                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 88),
+                  children: [
+                    if (equipos.isNotEmpty) ...[
+                      const _Titulo('Equipos de tu liga'),
+                      for (final e in equipos)
+                        _TarjetaEquipoLiga(
+                          equipo: e,
+                          onAbrir: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => EquipoLigaScreen(equipo: e),
+                            ),
+                          ),
+                        ),
+                      const SizedBox(height: 20),
+                    ],
+                    const _Titulo('Otros rivales'),
+                    if (rivales.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 4,
+                          vertical: 8,
+                        ),
+                        child: Text(
+                          _puedeEditar
+                              ? 'Para amistosos contra equipos que no están '
+                                    'en la app. Si no sabes quiénes juegan, se '
+                                    'inventa la plantilla.'
+                              : 'Todavía no hay ninguno.',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: Colors.grey.shade600,
+                          ),
+                        ),
+                      ),
+                    for (final r in rivales)
+                      _TarjetaRival(
+                        rival: r,
+                        puedeBorrar: _puedeEditar,
+                        onAbrir: () async {
+                          await Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => RivalPlantillaScreen(
+                                rival: r,
+                                admin: widget.admin,
+                                session: widget.session,
+                              ),
+                            ),
+                          );
+                          await _recargar();
+                        },
+                        onBorrar: () => _eliminar(r),
+                      ),
+                  ],
+                );
+              },
             ),
           );
         },
@@ -195,8 +275,10 @@ class _TarjetaRival extends StatelessWidget {
           foregroundColor: Colors.white,
           child: const Icon(Icons.shield_outlined),
         ),
-        title: Text(rival.name,
-            style: GoogleFonts.poppins(fontWeight: FontWeight.w600)),
+        title: Text(
+          rival.name,
+          style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
+        ),
         subtitle: Padding(
           padding: const EdgeInsets.only(top: 4),
           child: Wrap(
@@ -204,12 +286,17 @@ class _TarjetaRival extends StatelessWidget {
             runSpacing: 4,
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              Text(rival.sinPlantilla
-                  ? 'Sin jugadores cargados'
-                  : '${rival.totalJugadores} jugadores'),
+              Text(
+                rival.sinPlantilla
+                    ? 'Sin jugadores cargados'
+                    : '${rival.totalJugadores} jugadores',
+              ),
               if (rival.totalImaginarios > 0)
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 2,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.amber.shade100,
                     borderRadius: BorderRadius.circular(10),
@@ -219,7 +306,10 @@ class _TarjetaRival extends StatelessWidget {
                     rival.plantillaEsInventada
                         ? 'Plantilla inventada'
                         : '${rival.totalImaginarios} inventados',
-                    style: TextStyle(fontSize: 11, color: Colors.brown.shade800),
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Colors.brown.shade800,
+                    ),
                   ),
                 ),
             ],
@@ -268,9 +358,13 @@ class _FormularioRivalState extends State<_FormularioRival> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text('Nuevo equipo rival',
-                  style: GoogleFonts.poppins(
-                      fontSize: 18, fontWeight: FontWeight.bold)),
+              Text(
+                'Nuevo equipo rival',
+                style: GoogleFonts.poppins(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
               const SizedBox(height: 20),
 
               TextFormField(
@@ -286,8 +380,10 @@ class _FormularioRivalState extends State<_FormularioRival> {
               ),
               const SizedBox(height: 20),
 
-              Text('¿Tienes los datos de sus jugadores?',
-                  style: GoogleFonts.poppins(fontWeight: FontWeight.w600)),
+              Text(
+                '¿Tienes los datos de sus jugadores?',
+                style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
+              ),
               const SizedBox(height: 10),
 
               _Opcion(
@@ -295,7 +391,8 @@ class _FormularioRivalState extends State<_FormularioRival> {
                 onTap: () => setState(() => _inventar = true),
                 icono: Icons.auto_awesome,
                 titulo: 'No los tengo',
-                detalle: 'Arma un 11 con nombres inventados para poder jugar '
+                detalle:
+                    'Arma un 11 con nombres inventados para poder jugar '
                     'igual. Quedan marcados como imaginarios y los puedes '
                     'corregir cuando consigas los datos reales.',
               ),
@@ -305,7 +402,8 @@ class _FormularioRivalState extends State<_FormularioRival> {
                 onTap: () => setState(() => _inventar = false),
                 icono: Icons.edit_note,
                 titulo: 'Sí, los cargo yo',
-                detalle: 'Crea el equipo vacío para que agregues sus '
+                detalle:
+                    'Crea el equipo vacío para que agregues sus '
                     'jugadores uno por uno.',
               ),
 
@@ -323,10 +421,14 @@ class _FormularioRivalState extends State<_FormularioRival> {
                     child: FilledButton(
                       onPressed: () {
                         if (!_formulario.currentState!.validate()) return;
-                        Navigator.pop(context, (_nombre.text.trim(), _inventar));
+                        Navigator.pop(context, (
+                          _nombre.text.trim(),
+                          _inventar,
+                        ));
                       },
                       style: FilledButton.styleFrom(
-                          backgroundColor: const Color(0xFF1B5E20)),
+                        backgroundColor: const Color(0xFF1B5E20),
+                      ),
                       child: const Text('Crear'),
                     ),
                   ),
@@ -365,7 +467,9 @@ class _Opcion extends StatelessWidget {
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(10),
           border: Border.all(
-            color: seleccionada ? const Color(0xFF1B5E20) : Colors.grey.shade300,
+            color: seleccionada
+                ? const Color(0xFF1B5E20)
+                : Colors.grey.shade300,
             width: seleccionada ? 2 : 1,
           ),
           color: seleccionada ? Colors.green.shade50 : null,
@@ -373,26 +477,118 @@ class _Opcion extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(icono,
-                color: seleccionada ? const Color(0xFF1B5E20) : Colors.grey),
+            Icon(
+              icono,
+              color: seleccionada ? const Color(0xFF1B5E20) : Colors.grey,
+            ),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(titulo,
-                      style: GoogleFonts.poppins(fontWeight: FontWeight.w600)),
+                  Text(
+                    titulo,
+                    style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
+                  ),
                   const SizedBox(height: 4),
-                  Text(detalle,
-                      style: TextStyle(
-                          fontSize: 12, color: Colors.grey.shade700)),
+                  Text(
+                    detalle,
+                    style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                  ),
                 ],
               ),
             ),
             if (seleccionada)
-              const Icon(Icons.check_circle, color: Color(0xFF1B5E20), size: 20),
+              const Icon(
+                Icons.check_circle,
+                color: Color(0xFF1B5E20),
+                size: 20,
+              ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _Titulo extends StatelessWidget {
+  const _Titulo(this.texto);
+
+  final String texto;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(left: 4, bottom: 8),
+    child: Text(
+      texto.toUpperCase(),
+      style: GoogleFonts.poppins(
+        fontSize: 12,
+        fontWeight: FontWeight.bold,
+        letterSpacing: 0.6,
+        color: Colors.grey.shade600,
+      ),
+    ),
+  );
+}
+
+/// Un equipo de la liga. Salen todos, tambien los incompletos: saber a
+/// quien le faltan jugadores es parte de saber a quien se puede retar.
+class _TarjetaEquipoLiga extends StatelessWidget {
+  const _TarjetaEquipoLiga({required this.equipo, required this.onAbrir});
+
+  final EquipoDelGrupo equipo;
+  final VoidCallback onAbrir;
+
+  @override
+  Widget build(BuildContext context) {
+    final completo = equipo.habilitado;
+    final motivo = equipo.motivoNoRetable;
+
+    return Card(
+      elevation: 2,
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      child: ListTile(
+        onTap: onAbrir,
+        leading: CircleAvatar(
+          backgroundColor: completo
+              ? const Color(0xFF1B5E20)
+              : Colors.grey.shade400,
+          foregroundColor: Colors.white,
+          child: const Icon(Icons.shield),
+        ),
+        title: Text(
+          equipo.name,
+          style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
+        ),
+        subtitle: Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Row(
+            children: [
+              Icon(
+                completo ? Icons.check_circle : Icons.error_outline,
+                size: 14,
+                color: completo
+                    ? Colors.green.shade700
+                    : Colors.orange.shade700,
+              ),
+              const SizedBox(width: 5),
+              Expanded(
+                child: Text(
+                  completo
+                      ? '${equipo.jugadores} jugadores - listo para jugar'
+                      : '${equipo.jugadores} jugadores - ${motivo ?? "incompleto"}',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: completo
+                        ? Colors.green.shade800
+                        : Colors.orange.shade900,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        trailing: const Icon(Icons.chevron_right),
       ),
     );
   }

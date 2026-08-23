@@ -27,7 +27,23 @@ class EquipoDelGrupo {
   final bool habilitado;
   final bool esMiEquipo;
 
-  bool get sePuedeRetar => tieneCapitan && !esMiEquipo;
+  /// Retar exige capitán en los dos lados y los 11 con cédula en los
+  /// dos: `retar_equipo` lo comprueba, y `responder_reto` exige que el
+  /// retado tenga capitán, o nadie podría aceptar.
+  bool get sePuedeRetar => tieneCapitan && habilitado && !esMiEquipo;
+
+  /// Por qué no se puede retar, para decirlo en vez de esconder el
+  /// equipo. Un desplegable que oculta la mitad de la liga sin explicar
+  /// nada parece que la app está rota.
+  String? get motivoNoRetable {
+    if (esMiEquipo) return 'Es tu equipo';
+    if (!habilitado) {
+      final faltan = 11 - jugadores;
+      return faltan > 0 ? 'Le faltan $faltan para los 11' : 'Sin los 11 con cédula';
+    }
+    if (!tieneCapitan) return 'Todavía no tiene capitán';
+    return null;
+  }
 
   factory EquipoDelGrupo.fromMap(Map<String, dynamic> map) => EquipoDelGrupo(
         id: map['id'] as String,

@@ -13,15 +13,25 @@ class ChallengesRepository {
 
   SupabaseClient get _db => SupabaseService.client;
 
-  /// Los equipos de la liga, para elegir a quién retar.
+  /// Los equipos de la liga, menos el mío.
+  ///
+  /// No se filtran los que no se pueden retar: se muestran con el motivo.
+  /// Esconderlos hacía que el desplegable ofreciera un solo equipo —el
+  /// que iba a fallar— y que el que sí interesaba no apareciera nunca.
   Future<List<EquipoDelGrupo>> equiposParaRetar(String groupId) async {
     final filas = await _db.rpc('equipos_del_grupo', params: {
       'p_group_id': groupId,
     });
-    return (filas as List)
+    final todos = (filas as List)
         .map((f) => EquipoDelGrupo.fromMap(Map<String, dynamic>.from(f as Map)))
-        .where((e) => e.sePuedeRetar)
+        .where((e) => !e.esMiEquipo)
         .toList();
+    // Los retables primero: es lo que el capitán viene a hacer.
+    todos.sort((a, b) {
+      if (a.sePuedeRetar == b.sePuedeRetar) return a.name.compareTo(b.name);
+      return a.sePuedeRetar ? -1 : 1;
+    });
+    return todos;
   }
 
   /// Los retos del equipo, enviados y recibidos, en una sola lista.

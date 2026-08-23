@@ -81,7 +81,7 @@ class _RetosScreenState extends State<RetosScreen> {
     if (!mounted) return;
 
     if (equipos.isEmpty) {
-      _avisar('Todavía no hay otro equipo con capitán en tu liga.');
+      _avisar('Tu liga todavía no tiene otro equipo.');
       return;
     }
 
@@ -494,7 +494,12 @@ class _FormularioReto extends StatefulWidget {
 }
 
 class _FormularioRetoState extends State<_FormularioReto> {
-  late EquipoDelGrupo _rival = widget.equipos.first;
+  // Arranca en el primero que de verdad se puede retar; si ninguno se
+  // puede, en el primero a secas, para que el motivo quede a la vista.
+  late EquipoDelGrupo _rival = widget.equipos.firstWhere(
+    (e) => e.sePuedeRetar,
+    orElse: () => widget.equipos.first,
+  );
   DateTime? _cuando;
   final _lugar = TextEditingController();
   final _mensaje = TextEditingController();
@@ -569,14 +574,35 @@ class _FormularioRetoState extends State<_FormularioReto> {
               for (final e in widget.equipos)
                 DropdownMenuItem(
                   value: e,
+                  enabled: e.sePuedeRetar,
                   child: Text(
-                    e.habilitado ? e.name : '${e.name} (sin los 11)',
+                    e.sePuedeRetar ? e.name : '${e.name} — ${e.motivoNoRetable}',
                     overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: e.sePuedeRetar ? null : Colors.grey.shade500,
+                    ),
                   ),
                 ),
             ],
             onChanged: (v) => setState(() => _rival = v ?? _rival),
           ),
+          if (!_rival.sePuedeRetar) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Icon(Icons.info_outline, size: 16, color: Colors.orange.shade800),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    '${_rival.name}: ${_rival.motivoNoRetable}. '
+                    'Todavía no se le puede retar.',
+                    style: TextStyle(
+                        fontSize: 12, color: Colors.orange.shade900),
+                  ),
+                ),
+              ],
+            ),
+          ],
           const SizedBox(height: 16),
 
           OutlinedButton.icon(
@@ -650,7 +676,7 @@ class _FormularioRetoState extends State<_FormularioReto> {
           const SizedBox(height: 24),
 
           FilledButton(
-            onPressed: _cuando == null
+            onPressed: _cuando == null || !_rival.sePuedeRetar
                 ? null
                 : () => Navigator.pop(
                     context,
