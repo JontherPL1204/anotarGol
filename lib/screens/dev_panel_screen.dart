@@ -2,19 +2,30 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+import '../core/session.dart';
 import '../models/models.dart';
+import 'dev_acceso_screen.dart';
 import '../repositories/repositories.dart';
 
 /// El panel de desarrollo: todas las ligas y todos los equipos.
 ///
-/// Antes de llegar aquí hay que canjear la clave de acceso o abrir el
-/// panel. Las vistas están filtradas por `dev_panel_abierto()` en la
-/// propia base, así que si el panel se cierra mientras la pantalla está
-/// abierta, las listas se vacían solas.
+/// `panel_dev_grupos` y `panel_dev_equipos` filtran por
+/// `dev_panel_abierto()` en la propia base. Con el panel cerrado no dan
+/// error: devuelven cero filas. Por eso hay que comprobar el estado
+/// ANTES de pintar las listas; si no, un panel cerrado se ve idéntico a
+/// una instalación sin ligas, y no hay forma de saber cuál de las dos es.
 class DevPanelScreen extends StatefulWidget {
-  const DevPanelScreen({super.key, this.dev = const DevRepository()});
+  const DevPanelScreen({
+    super.key,
+    this.dev = const DevRepository(),
+    this.session,
+  });
 
   final DevRepository dev;
+
+  /// Al cerrar el panel se sale de la cuenta. Sin sesión no hay nada más
+  /// que mostrarle a un dev: no pertenece a ninguna liga.
+  final Session? session;
 
   @override
   State<DevPanelScreen> createState() => _DevPanelScreenState();
@@ -25,6 +36,7 @@ class _DevPanelScreenState extends State<DevPanelScreen> {
   List<EquipoDev> _equipos = const [];
   PanelDev _estado = const PanelDev();
   bool _cargando = true;
+  String? _fallo;
 
   @override
   void initState() {
@@ -33,9 +45,26 @@ class _DevPanelScreenState extends State<DevPanelScreen> {
   }
 
   Future<void> _cargar() async {
-    setState(() => _cargando = true);
+    setState(() {
+      _cargando = true;
+      _fallo = null;
+    });
     try {
       final estado = await widget.dev.estado();
+
+      // Con el panel cerrado las vistas devuelven vacío sin quejarse.
+      // Consultarlas igual pintaría "no hay ligas", que es mentira.
+      if (!estado.abierto) {
+        if (!mounted) return;
+        setState(() {
+          _estado = estado;
+          _ligas = const [];
+          _equipos = const [];
+          _cargando = false;
+        });
+        return;
+      }
+
       final ligas = await widget.dev.ligas();
       final equipos = await widget.dev.equipos();
       if (!mounted) return;
@@ -45,17 +74,24 @@ class _DevPanelScreenState extends State<DevPanelScreen> {
         _equipos = equipos;
         _cargando = false;
       });
-    } catch (_) {
-      if (mounted) setState(() => _cargando = false);
+    } catch (e) {
+      // Tragarse el error dejaba el panel en blanco sin explicación.
+      if (!mounted) return;
+      setState(() {
+        _cargando = false;
+        _fallo = 'No se pudo leer la base. Revisa tu conexión.';
+      });
     }
   }
 
   void _avisar(String m, {bool error = false}) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(m),
-      backgroundColor: error ? Colors.red.shade700 : Colors.green.shade700,
-    ));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(m),
+        backgroundColor: error ? Colors.red.shade700 : Colors.green.shade700,
+      ),
+    );
   }
 
   Future<void> _crearLiga() async {
@@ -106,7 +142,8 @@ class _DevPanelScreenState extends State<DevPanelScreen> {
       await _mostrarCodigo(
         titulo: 'Clave de capitán',
         codigo: codigo,
-        detalle: 'Dásela a un capitán de ${liga.name}. Con ella entra a la '
+        detalle:
+            'Dásela a un capitán de ${liga.name}. Con ella entra a la '
             'liga y puede fundar su equipo. Es de un solo uso.',
       );
     } catch (_) {
@@ -118,42 +155,41 @@ class _DevPanelScreenState extends State<DevPanelScreen> {
     required String titulo,
     required String codigo,
     required String detalle,
-  }) =>
-      showDialog<void>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: Text(titulo),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(detalle, style: const TextStyle(fontSize: 13)),
-              const SizedBox(height: 16),
-              SelectableText(
-                codigo,
-                style: GoogleFonts.robotoMono(
-                  fontSize: 28,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 5,
-                ),
-              ),
-            ],
+  }) => showDialog<void>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text(titulo),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(detalle, style: const TextStyle(fontSize: 13)),
+          const SizedBox(height: 16),
+          SelectableText(
+            codigo,
+            style: GoogleFonts.robotoMono(
+              fontSize: 28,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 5,
+            ),
           ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Clipboard.setData(ClipboardData(text: codigo));
-                Navigator.pop(context);
-                _avisar('Copiada.');
-              },
-              child: const Text('Copiar'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Listo'),
-            ),
-          ],
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () {
+            Clipboard.setData(ClipboardData(text: codigo));
+            Navigator.pop(context);
+            _avisar('Copiada.');
+          },
+          child: const Text('Copiar'),
         ),
-      );
+        FilledButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Listo'),
+        ),
+      ],
+    ),
+  );
 
   Future<void> _borrarLiga(GrupoDev liga) async {
     // Se escribe el nombre a mano: borrar una liga se lleva por delante
@@ -162,7 +198,8 @@ class _DevPanelScreenState extends State<DevPanelScreen> {
       context: context,
       builder: (context) => _DialogoBorrar(
         que: 'la liga ${liga.name}',
-        arrastra: '${liga.equipos} equipos, ${liga.miembros} miembros y '
+        arrastra:
+            '${liga.equipos} equipos, ${liga.miembros} miembros y '
             '${liga.partidos} partidos',
         palabra: liga.name,
       ),
@@ -198,9 +235,31 @@ class _DevPanelScreenState extends State<DevPanelScreen> {
     }
   }
 
+  /// Vuelve a pedir la clave. Es la única forma de reabrir el panel: no
+  /// se puede reabrir solo, o la clave no serviría de nada.
+  Future<void> _abrirDeNuevo() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => DevAccesoScreen(dev: widget.dev)),
+    );
+    if (mounted) await _cargar();
+  }
+
   Future<void> _cerrar() async {
     await widget.dev.cerrarPanel();
-    if (mounted) Navigator.of(context).pop();
+    if (!mounted) return;
+
+    // Cerrar el panel es terminar. Un dev no pertenece a ninguna liga,
+    // así que devolverlo a la app lo dejaría en una pantalla vacía: se
+    // cierra la sesión y vuelve al login.
+    final sesion = widget.session;
+    if (sesion != null) {
+      await sesion.salir();
+      if (!mounted) return;
+    }
+
+    final nav = Navigator.of(context);
+    if (nav.canPop()) nav.pop();
   }
 
   @override
@@ -209,7 +268,10 @@ class _DevPanelScreenState extends State<DevPanelScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('Panel', style: GoogleFonts.poppins(fontWeight: FontWeight.bold)),
+        title: Text(
+          'Panel',
+          style: GoogleFonts.poppins(fontWeight: FontWeight.bold),
+        ),
         backgroundColor: Colors.blueGrey.shade900,
         foregroundColor: Colors.white,
         actions: [
@@ -235,35 +297,50 @@ class _DevPanelScreenState extends State<DevPanelScreen> {
                 ),
               ),
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _crearLiga,
-        backgroundColor: Colors.blueGrey.shade900,
-        foregroundColor: Colors.white,
-        icon: const Icon(Icons.add),
-        label: const Text('Nueva liga'),
-      ),
+      // Con el panel cerrado no hay nada que crear.
+      floatingActionButton: _estado.abierto && _fallo == null
+          ? FloatingActionButton.extended(
+              onPressed: _crearLiga,
+              backgroundColor: Colors.blueGrey.shade900,
+              foregroundColor: Colors.white,
+              icon: const Icon(Icons.add),
+              label: const Text('Nueva liga'),
+            )
+          : null,
       body: _cargando
           ? const Center(child: CircularProgressIndicator())
+          : !_estado.abierto
+          ? _PanelCerrado(onAbrir: _abrirDeNuevo)
+          : _fallo != null
+          ? _Fallo(mensaje: _fallo!, onReintentar: _cargar)
           : RefreshIndicator(
               onRefresh: _cargar,
               child: _ligas.isEmpty
                   ? ListView(
                       children: [
                         const SizedBox(height: 80),
-                        Icon(Icons.emoji_events_outlined,
-                            size: 56, color: Colors.grey.shade400),
+                        Icon(
+                          Icons.emoji_events_outlined,
+                          size: 56,
+                          color: Colors.grey.shade400,
+                        ),
                         const SizedBox(height: 12),
                         Center(
-                          child: Text('Todavía no hay ligas',
-                              style: GoogleFonts.poppins(
-                                  fontWeight: FontWeight.w600)),
+                          child: Text(
+                            'Todavía no hay ligas',
+                            style: GoogleFonts.poppins(
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
                         ),
                         const SizedBox(height: 6),
                         Center(
                           child: Text(
                             'Crea la primera y reparte su clave de capitán.',
                             style: TextStyle(
-                                fontSize: 13, color: Colors.grey.shade600),
+                              fontSize: 13,
+                              color: Colors.grey.shade600,
+                            ),
                           ),
                         ),
                       ],
@@ -317,11 +394,15 @@ class _TarjetaLiga extends StatelessWidget {
         leading: CircleAvatar(
           backgroundColor: Colors.blueGrey.shade700,
           foregroundColor: Colors.white,
-          child: Text('${liga.equipos}',
-              style: const TextStyle(fontWeight: FontWeight.bold)),
+          child: Text(
+            '${liga.equipos}',
+            style: const TextStyle(fontWeight: FontWeight.bold),
+          ),
         ),
-        title: Text(liga.name,
-            style: GoogleFonts.poppins(fontWeight: FontWeight.w600)),
+        title: Text(
+          liga.name,
+          style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
+        ),
         subtitle: Text(
           '${liga.equipos} equipos · ${liga.miembros} miembros · '
           '${liga.partidos} partidos',
@@ -347,7 +428,9 @@ class _TarjetaLiga extends StatelessWidget {
                   onPressed: onBorrar,
                   icon: const Icon(Icons.delete_outline, size: 18),
                   label: const Text('Borrar'),
-                  style: TextButton.styleFrom(foregroundColor: Colors.red.shade700),
+                  style: TextButton.styleFrom(
+                    foregroundColor: Colors.red.shade700,
+                  ),
                 ),
               ],
             ),
@@ -357,8 +440,10 @@ class _TarjetaLiga extends StatelessWidget {
               padding: EdgeInsets.fromLTRB(16, 0, 16, 16),
               child: Align(
                 alignment: Alignment.centerLeft,
-                child: Text('Sin equipos todavía',
-                    style: TextStyle(fontSize: 12, color: Colors.grey)),
+                child: Text(
+                  'Sin equipos todavía',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
               ),
             )
           else
@@ -368,14 +453,16 @@ class _TarjetaLiga extends StatelessWidget {
                 leading: Icon(
                   e.habilitado ? Icons.check_circle : Icons.hourglass_bottom,
                   size: 20,
-                  color: e.habilitado ? Colors.green.shade600 : Colors.amber.shade700,
+                  color: e.habilitado
+                      ? Colors.green.shade600
+                      : Colors.amber.shade700,
                 ),
                 title: Text(e.etiqueta, style: const TextStyle(fontSize: 14)),
                 subtitle: Text(
                   e.habilitado
                       ? '${e.jugadores} jugadores · listo para jugar'
                       : 'Faltan ${e.faltan} con cédula'
-                          '${e.tieneCapitan ? '' : ' · sin capitán'}',
+                            '${e.tieneCapitan ? '' : ' · sin capitán'}',
                   style: const TextStyle(fontSize: 11),
                 ),
                 trailing: IconButton(
@@ -484,7 +571,8 @@ class _DialogoBorrarState extends State<_DialogoBorrar> {
   void initState() {
     super.initState();
     _campo.addListener(() {
-      final ok = _campo.text.trim().toLowerCase() ==
+      final ok =
+          _campo.text.trim().toLowerCase() ==
           widget.palabra.trim().toLowerCase();
       if (ok != _coincide) setState(() => _coincide = ok);
     });
@@ -504,11 +592,15 @@ class _DialogoBorrarState extends State<_DialogoBorrar> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Se lleva por delante ${widget.arrastra}. No se puede deshacer.',
-              style: const TextStyle(fontSize: 13)),
+          Text(
+            'Se lleva por delante ${widget.arrastra}. No se puede deshacer.',
+            style: const TextStyle(fontSize: 13),
+          ),
           const SizedBox(height: 16),
-          Text('Escribe "${widget.palabra}" para confirmar:',
-              style: const TextStyle(fontSize: 12)),
+          Text(
+            'Escribe "${widget.palabra}" para confirmar:',
+            style: const TextStyle(fontSize: 12),
+          ),
           const SizedBox(height: 8),
           TextField(
             controller: _campo,
@@ -528,6 +620,95 @@ class _DialogoBorrarState extends State<_DialogoBorrar> {
           child: const Text('Borrar'),
         ),
       ],
+    );
+  }
+}
+
+/// El panel está cerrado: las vistas de la base devuelven cero filas.
+///
+/// Se dice explícitamente porque un panel cerrado y una instalación sin
+/// ligas se ven exactamente igual, y confundirlos hace pensar que se
+/// perdieron los datos.
+class _PanelCerrado extends StatelessWidget {
+  const _PanelCerrado({required this.onAbrir});
+
+  final Future<void> Function() onAbrir;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.lock_outline, size: 56, color: Colors.grey.shade400),
+            const SizedBox(height: 16),
+            Text(
+              'El panel está cerrado',
+              style: GoogleFonts.poppins(
+                fontSize: 17,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Tus ligas y equipos siguen ahí. Para verlos hay que abrir '
+              'el panel otra vez con tu clave.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
+            ),
+            const SizedBox(height: 24),
+            FilledButton.icon(
+              onPressed: onAbrir,
+              icon: const Icon(Icons.vpn_key),
+              label: const Text('Abrir el panel'),
+              style: FilledButton.styleFrom(
+                backgroundColor: Colors.blueGrey.shade900,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: 14,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// No se pudo leer la base. Antes esto se tragaba en silencio.
+class _Fallo extends StatelessWidget {
+  const _Fallo({required this.mensaje, required this.onReintentar});
+
+  final String mensaje;
+  final Future<void> Function() onReintentar;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.cloud_off, size: 56, color: Colors.grey.shade400),
+            const SizedBox(height: 16),
+            Text(
+              mensaje,
+              textAlign: TextAlign.center,
+              style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 20),
+            OutlinedButton.icon(
+              onPressed: onReintentar,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Reintentar'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

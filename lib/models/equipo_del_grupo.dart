@@ -9,6 +9,7 @@ class EquipoDelGrupo {
     this.primaryColorHex = '#1B5E20',
     this.jugadores = 0,
     this.tieneCapitan = false,
+    this.habilitado = false,
     this.esMiEquipo = false,
   });
 
@@ -21,6 +22,9 @@ class EquipoDelGrupo {
 
   /// Sin capitán no hay a quién retar.
   final bool tieneCapitan;
+
+  /// Llegó a los 11 con cédula. Se puede saber sin ver quiénes son.
+  final bool habilitado;
   final bool esMiEquipo;
 
   bool get sePuedeRetar => tieneCapitan && !esMiEquipo;
@@ -33,6 +37,7 @@ class EquipoDelGrupo {
         primaryColorHex: (map['primary_color'] as String?) ?? '#1B5E20',
         jugadores: (map['jugadores'] as num?)?.toInt() ?? 0,
         tieneCapitan: (map['tiene_capitan'] as bool?) ?? false,
+        habilitado: (map['habilitado'] as bool?) ?? false,
         esMiEquipo: (map['es_mi_equipo'] as bool?) ?? false,
       );
 }

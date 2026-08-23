@@ -246,8 +246,27 @@ void main() {
   group('DevPanelScreen', () {
     testWidgets('sin ligas lo dice en vez de mostrar una lista vacía',
         (tester) async {
-      await _montar(tester, DevPanelScreen(dev: _DevFalso()));
+      // Con el panel ABIERTO: sin ligas de verdad.
+      await _montar(tester, DevPanelScreen(dev: _DevFalso(
+        estadoInicial: const PanelDev(soyDev: true, abierto: true),
+      )));
       expect(find.text('Todavía no hay ligas'), findsOneWidget);
+    });
+
+    testWidgets('con el panel cerrado no dice que no hay ligas',
+        (tester) async {
+      // Las vistas de la base filtran por dev_panel_abierto() y con el
+      // panel cerrado devuelven cero filas, sin error. Pintar eso como
+      // "no hay ligas" hacía pensar que se habían perdido los datos.
+      await _montar(tester, DevPanelScreen(dev: _DevFalso(
+        estadoInicial: const PanelDev(soyDev: true, abierto: false),
+      )));
+
+      expect(find.text('El panel está cerrado'), findsOneWidget);
+      expect(find.text('Todavía no hay ligas'), findsNothing);
+      expect(find.text('Abrir el panel'), findsOneWidget);
+      // Y no se ofrece crear nada mientras esté cerrado.
+      expect(find.text('Nueva liga'), findsNothing);
     });
 
     testWidgets('lista las ligas con sus equipos numerados', (tester) async {

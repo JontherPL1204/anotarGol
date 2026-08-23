@@ -43,6 +43,8 @@
 --   20260824220000_40_revisar_clave_sin_sesion.sql
 --   20260824230000_41_situacion_sabe_si_eres_dev.sql
 --   20260825000000_42_revisar_clave_solo_invitaciones.sql
+--   20260825120000_43_plantilla_rival_solo_con_partido.sql
+--   20260825140000_44_mis_retos.sql
 
 -- #####################################################################
 -- # 20260821120000_00_extensions_enums.sql
@@ -9456,4 +9458,219 @@ grant execute on function public.revisar_clave(text) to authenticated, anon;
 comment on function public.revisar_clave is
   'Dice qué hace una clave de invitación sin consumirla. No responde por '
   'claves de dev: sería un oráculo de fuerza bruta sin sesión.';
+
+
+-- #####################################################################
+-- # 20260825120000_43_plantilla_rival_solo_con_partido.sql
+-- #####################################################################
+
+-- =====================================================================
+-- Anotar Gol - 43 | La plantilla del rival se ve al concretar el partido
+-- =====================================================================
+-- Decisión del 25/08/2026: los jugadores SÍ pueden ver a los jugadores
+-- rivales, pero solo cuando el partido está concretado. Hasta entonces,
+-- estar en la misma liga no da derecho a mirar la plantilla ajena.
+--
+-- Lo que había: `can_view_team` deja ver un equipo a cualquiera del
+-- mismo grupo, y `players_select` colgaba de ahí. O sea que un capitán
+-- veía los once del rival desde el momento en que entraba a la liga, sin
+-- haber acordado nada. Eso ademas dejaba sin sentido la plantilla
+-- imaginaria: para qué inventar un rival que ya puedes leer.
+--
+-- Lo que NO cambia, y es a propósito:
+--   * El equipo en sí (nombre, logo, número en la liga) sigue visible
+--     para toda la liga. Sin eso no podrías ni saber a quién retar.
+--   * `equipo_habilitado()` sigue respondiendo: hay que poder saber si
+--     el rival llegó a once ANTES de retarlo, sin ver quiénes son.
+--   * `goleadores` agrupa por equipo, así que sigue igual: los tuyos
+--     siempre, y los rivales contra los que jugaste.
+--
+-- "Concretado" es que exista el partido. Lo crea `confirmar_acuerdo`
+-- cuando los dos capitanes cierran el trato en el chat temporal. Un
+-- partido cancelado no cuenta.
+--
+-- La visibilidad no se retira después de jugar: si te enfrentaste a
+-- ellos, ya los viste. Quitarlo seria fingir que se puede desver algo, y
+-- ademas rompería el historial del partido.
+-- =====================================================================
+
+-- ---------------------------------------------------------------------
+-- 1. ¿Hay partido entre estos dos equipos?
+-- ---------------------------------------------------------------------
+-- Se mira en las dos direcciones porque `matches` guarda una sola fila
+-- por partido, desde el punto de vista de quien lo creó: uno queda en
+-- `team_id` y el otro en `opponent_team_id`.
+create or replace function public.hay_partido_concretado(
+  p_equipo_a uuid,
+  p_equipo_b uuid
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select p_equipo_a is not null
+     and p_equipo_b is not null
+     and exists (
+    select 1
+    from public.matches m
+    where m.status <> 'cancelled'
+      and (   (m.team_id = p_equipo_a and m.opponent_team_id = p_equipo_b)
+           or (m.team_id = p_equipo_b and m.opponent_team_id = p_equipo_a))
+  );
+$$;
+
+revoke all on function public.hay_partido_concretado(uuid, uuid) from public;
+grant execute on function public.hay_partido_concretado(uuid, uuid) to authenticated;
+
+comment on function public.hay_partido_concretado is
+  'Si dos equipos tienen un partido acordado y no cancelado entre ellos.';
+
+-- ---------------------------------------------------------------------
+-- 2. ¿Puedo ver esta plantilla?
+-- ---------------------------------------------------------------------
+-- Tres caminos, y ninguno es "estar en la misma liga":
+--   * es mi equipo;
+--   * alguno de mis equipos tiene partido concretado con ese;
+--   * soy dev, que lo ve todo sin dejar rastro.
+--
+-- Se recorren TODOS mis equipos porque una misma persona puede estar en
+-- varias ligas a la vez. Si mi equipo de la liga B juega contra ellos,
+-- los veo; que mi equipo de la liga A no los conozca es irrelevante.
+create or replace function public.puedo_ver_plantilla(p_team_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select public.es_dev()
+      or public.is_team_member(p_team_id)
+      or exists (
+        select 1
+        from public.team_members tm
+        where tm.user_id = auth.uid()
+          and public.hay_partido_concretado(tm.team_id, p_team_id)
+      );
+$$;
+
+revoke all on function public.puedo_ver_plantilla(uuid) from public;
+grant execute on function public.puedo_ver_plantilla(uuid) to authenticated;
+
+comment on function public.puedo_ver_plantilla is
+  'La plantilla ajena se ve al concretar el partido, no por compartir liga.';
+
+-- ---------------------------------------------------------------------
+-- 3. Las políticas que dependían de compartir liga
+-- ---------------------------------------------------------------------
+drop policy if exists players_select on public.players;
+create policy players_select on public.players
+  for select to authenticated
+  using (public.puedo_ver_plantilla(team_id));
+
+-- Una alineación ES la plantilla, dicha de otra forma: si no se puede
+-- ver una, no tiene sentido dejar la otra abierta.
+drop policy if exists match_lineups_select on public.match_lineups;
+create policy match_lineups_select on public.match_lineups
+  for select to authenticated
+  using (public.puedo_ver_plantilla(team_id));
+
+-- Los rivales que un equipo carga o inventa son sus apuntes privados.
+-- Que los leyera toda la liga nunca tuvo sentido.
+drop policy if exists rivals_select on public.rivals;
+create policy rivals_select on public.rivals
+  for select to authenticated
+  using (public.is_team_member(team_id) or public.es_dev());
+
+drop policy if exists rival_players_select on public.rival_players;
+create policy rival_players_select on public.rival_players
+  for select to authenticated
+  using (public.is_team_member(team_id) or public.es_dev());
+
+
+-- #####################################################################
+-- # 20260825140000_44_mis_retos.sql
+-- #####################################################################
+
+-- =====================================================================
+-- Anotar Gol - 44 | Los retos, vistos desde los dos lados
+-- =====================================================================
+-- Ya existia `retos_recibidos`, pero un capitan tambien necesita ver los
+-- que mandó: si no, reta a alguien y la pantalla se queda muda hasta que
+-- le respondan. Sin eso vuelve a retar, y quedan dos retos iguales.
+--
+-- Se devuelve una sola lista con `soy_retador` en vez de dos consultas,
+-- porque en la pantalla es una sola conversación: "Clásicos FC te retó"
+-- y "retaste a Clásicos FC" son la misma fila mirada al revés.
+--
+-- El aviso de choque de horario solo se calcula para lo recibido. Para
+-- lo enviado no aplica: el conflicto ya se comprobó al crear el reto, y
+-- volver a mirarlo desde este lado diría siempre que choca consigo
+-- mismo.
+-- =====================================================================
+
+create or replace function public.mis_retos(p_team_id uuid)
+returns table (
+  id                   uuid,
+  soy_retador          boolean,
+  otro_equipo_id       uuid,
+  otro_equipo          text,
+  otro_logo            text,
+  status               text,
+  message              text,
+  proposed_kickoff_at  timestamptz,
+  venue                text,
+  duration_minutes     int,
+  substitutions_allowed int,
+  match_id             uuid,
+  created_at           timestamptz,
+  choca_con_tu_agenda  boolean
+)
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select
+    c.id,
+    (c.from_team_id = p_team_id)                              as soy_retador,
+    case when c.from_team_id = p_team_id
+         then c.to_team_id else c.from_team_id end            as otro_equipo_id,
+    -- Para el dev sale con su número delante; para el resto, el nombre
+    -- a secas. Es la misma etiqueta que en el resto de la app.
+    public.etiqueta_equipo(t.numero_en_grupo, t.name, public.es_dev())
+                                                              as otro_equipo,
+    t.logo_url                                                as otro_logo,
+    c.status::text,
+    c.message,
+    c.proposed_kickoff_at,
+    c.venue,
+    c.duration_minutes,
+    c.substitutions_allowed,
+    c.match_id,
+    c.created_at,
+    case when c.from_team_id = p_team_id then false
+         else public.hay_conflicto_horario(
+                p_team_id, c.proposed_kickoff_at, c.duration_minutes, c.id)
+    end                                                       as choca_con_tu_agenda
+  from public.challenges c
+  join public.teams t
+    on t.id = case when c.from_team_id = p_team_id
+                   then c.to_team_id else c.from_team_id end
+  where (c.from_team_id = p_team_id or c.to_team_id = p_team_id)
+    -- SECURITY DEFINER se salta las políticas, así que la pertenencia se
+    -- comprueba aquí a mano. Sin esto, cualquiera podría leer los retos
+    -- de un equipo ajeno pasando su id.
+    and (public.is_team_member(p_team_id) or public.es_dev())
+  order by
+    (c.status = 'pending') desc,
+    c.proposed_kickoff_at;
+$$;
+
+revoke all on function public.mis_retos(uuid) from public;
+grant execute on function public.mis_retos(uuid) to authenticated;
+
+comment on function public.mis_retos is
+  'Retos de un equipo, enviados y recibidos, con soy_retador para distinguirlos.';
 

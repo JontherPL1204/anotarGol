@@ -14,6 +14,7 @@ export 'match_event.dart';
 export 'player.dart';
 export 'plantilla.dart';
 export 'player_stats.dart';
+export 'reto.dart';
 export 'rival.dart';
 export 'rival_player.dart';
 export 'season.dart';

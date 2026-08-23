@@ -9,6 +9,7 @@ import 'plantilla.dart';
 import 'screens/cuenta_screen.dart';
 import 'screens/goleadores_screen.dart';
 import 'screens/login_screen.dart';
+import 'screens/retos_screen.dart';
 import 'screens/rivales_screen.dart';
 import 'widgets/marcador_card.dart';
 import 'widgets/proximo_partido_card.dart';
@@ -106,9 +107,24 @@ class _HomescreenState extends State<Homescreen> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => RivalesScreen(
-          admin: _admin,
-          session: widget.session,
+        builder: (context) =>
+            RivalesScreen(admin: _admin, session: widget.session),
+      ),
+    );
+  }
+
+  void _abrirRetos() {
+    final sesion = widget.session;
+    final s = sesion?.situacion;
+    if (sesion == null || s?.teamId == null || s?.groupId == null) return;
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => RetosScreen(
+          session: sesion,
+          teamId: s!.teamId!,
+          groupId: s.groupId!,
         ),
       ),
     );
@@ -141,9 +157,11 @@ class _HomescreenState extends State<Homescreen> {
                 tooltip: widget.session!.haySesion
                     ? 'Mi cuenta (${widget.session!.rolLegible})'
                     : 'Iniciar sesión',
-                icon: Icon(widget.session!.haySesion
-                    ? Icons.account_circle
-                    : Icons.login),
+                icon: Icon(
+                  widget.session!.haySesion
+                      ? Icons.account_circle
+                      : Icons.login,
+                ),
               ),
             ),
           const Padding(
@@ -176,12 +194,14 @@ class _HomescreenState extends State<Homescreen> {
 
               OutlinedButton.icon(
                 onPressed: _toggleInfo,
-                icon: Icon(_verProximoPartido
-                    ? Icons.visibility_off
-                    : Icons.visibility),
-                label: Text(_verProximoPartido
-                    ? 'Ocultar Calendario'
-                    : 'Ver Próximo Partido'),
+                icon: Icon(
+                  _verProximoPartido ? Icons.visibility_off : Icons.visibility,
+                ),
+                label: Text(
+                  _verProximoPartido
+                      ? 'Ocultar Calendario'
+                      : 'Ver Próximo Partido',
+                ),
               ),
 
               if (_verProximoPartido)
@@ -192,6 +212,11 @@ class _HomescreenState extends State<Homescreen> {
               _AccesosDirectos(
                 onGoleadores: _abrirGoleadores,
                 onRivales: _abrirRivales,
+                onRetos: _abrirRetos,
+                // Retar es cosa de la liga: sin equipo no hay a quién.
+                hayLiga:
+                    widget.session?.situacion.teamId != null &&
+                    widget.session?.situacion.groupId != null,
                 habilitado: _admin.disponible,
               ),
             ],
@@ -264,8 +289,10 @@ class _TarjetaEquipo extends StatelessWidget {
               children: [
                 Icon(Icons.shield, color: Colors.green),
                 SizedBox(height: 4),
-                Text('Equipo Local',
-                    style: TextStyle(fontWeight: FontWeight.bold)),
+                Text(
+                  'Equipo Local',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
               ],
             ),
             Container(height: 40, width: 1, color: Colors.grey[300]),
@@ -311,11 +338,17 @@ class _AccesosDirectos extends StatelessWidget {
   const _AccesosDirectos({
     required this.onGoleadores,
     required this.onRivales,
+    required this.onRetos,
     required this.habilitado,
+    this.hayLiga = false,
   });
 
   final VoidCallback onGoleadores;
   final VoidCallback onRivales;
+  final VoidCallback onRetos;
+
+  /// El equipo pertenece a una liga: hay a quién retar.
+  final bool hayLiga;
 
   /// Sin backend no hay ranking ni rivales que mostrar.
   final bool habilitado;
@@ -333,26 +366,40 @@ class _AccesosDirectos extends StatelessWidget {
       );
     }
 
-    return Row(
+    return Column(
       children: [
-        Expanded(
-          child: _Acceso(
-            icono: Icons.emoji_events,
-            titulo: 'Goleadores',
-            detalle: 'Ranking e historial',
-            color: const Color(0xFFB8860B),
-            onTap: onGoleadores,
+        if (hayLiga) ...[
+          _Acceso(
+            icono: Icons.sports_soccer,
+            titulo: 'Retos',
+            detalle: 'Acordar partidos con otros equipos',
+            color: const Color(0xFF1B5E20),
+            onTap: onRetos,
           ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _Acceso(
-            icono: Icons.shield_outlined,
-            titulo: 'Rivales',
-            detalle: 'Equipos y plantillas',
-            color: Colors.blueGrey.shade700,
-            onTap: onRivales,
-          ),
+          const SizedBox(height: 12),
+        ],
+        Row(
+          children: [
+            Expanded(
+              child: _Acceso(
+                icono: Icons.emoji_events,
+                titulo: 'Goleadores',
+                detalle: 'Ranking e historial',
+                color: const Color(0xFFB8860B),
+                onTap: onGoleadores,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _Acceso(
+                icono: Icons.shield_outlined,
+                titulo: 'Rivales',
+                detalle: 'Equipos y plantillas',
+                color: Colors.blueGrey.shade700,
+                onTap: onRivales,
+              ),
+            ),
+          ],
         ),
       ],
     );
@@ -387,13 +434,19 @@ class _Acceso extends StatelessWidget {
             children: [
               Icon(icono, color: color, size: 28),
               const SizedBox(height: 8),
-              Text(titulo,
-                  style: GoogleFonts.poppins(
-                      fontWeight: FontWeight.w600, fontSize: 13)),
+              Text(
+                titulo,
+                style: GoogleFonts.poppins(
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13,
+                ),
+              ),
               const SizedBox(height: 2),
-              Text(detalle,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 10, color: Colors.grey.shade600)),
+              Text(
+                detalle,
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 10, color: Colors.grey.shade600),
+              ),
             ],
           ),
         ),

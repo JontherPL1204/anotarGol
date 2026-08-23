@@ -44,7 +44,7 @@ class Puerta extends StatelessWidget {
         // El dev no pertenece a ninguna liga por diseño: exigirle una
         // clave de liga lo dejaría atrapado. Entra directo a su panel.
         if (session.esDev && !session.situacion.tieneGrupo) {
-          return const DevPanelScreen();
+          return DevPanelScreen(session: session);
         }
 
         // Con varias ligas, lo primero es saber en cuál trabaja.
