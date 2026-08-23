@@ -20,10 +20,19 @@ class _SesionFalsa extends Session {
     this.backend = true,
     TeamRole? rolInicial,
     this.errorAlEntrar,
+    this.clavesConocidas = const {},
   }) : _rolFalso = rolInicial;
 
   final bool backend;
   final String? errorAlEntrar;
+
+  /// Lo que devuelve `revisar_clave` para cada código.
+  final Map<String, ClaveRevisada> clavesConocidas;
+
+  @override
+  Future<ClaveRevisada> revisarClave(String codigo) async =>
+      clavesConocidas[codigo.toUpperCase()] ??
+      const ClaveRevisada(valida: false, motivo: 'Esa clave no existe.');
   TeamRole? _rolFalso;
   bool _entro = false;
 
@@ -227,8 +236,108 @@ void main() {
       await tester.tap(find.text('¿No tienes cuenta? Créala'));
       await tester.pumpAndSettle();
 
-      expect(find.widgetWithText(FilledButton, 'Crear cuenta'), findsOneWidget);
+      expect(find.widgetWithText(FilledButton, 'Crear cuenta y entrar'),
+          findsOneWidget);
       expect(find.text('Tu nombre (opcional)'), findsOneWidget);
+    });
+
+    testWidgets('el registro pide cédula y clave en el mismo formulario',
+        (tester) async {
+      await _montar(tester, LoginScreen(session: _SesionFalsa()));
+
+      // Iniciar sesión no pide ni cédula ni clave: son solo del registro.
+      expect(find.text('Cédula'), findsNothing);
+      expect(find.text('Clave de acceso'), findsNothing);
+
+      await tester.tap(find.text('¿No tienes cuenta? Créala'));
+      await tester.pumpAndSettle();
+
+      // Todo junto: entrar a la app es un solo acto.
+      expect(find.text('Cédula'), findsOneWidget);
+      expect(find.text('Clave de acceso'), findsOneWidget);
+      expect(find.text('Correo'), findsOneWidget);
+      expect(find.text('Contraseña'), findsOneWidget);
+    });
+
+    testWidgets('no deja registrarse sin la clave de invitación',
+        (tester) async {
+      final sesion = _SesionFalsa();
+      await _montar(tester, LoginScreen(session: sesion));
+
+      await tester.tap(find.text('¿No tienes cuenta? Créala'));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.widgetWithText(TextFormField, 'Cédula'),
+          '1750959676');
+      await tester.enterText(
+          find.widgetWithText(TextFormField, 'Correo'), 'jonther@club.com');
+      await tester.enterText(
+          find.widgetWithText(TextFormField, 'Contraseña'), '123456');
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Crear cuenta y entrar'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Escribe la clave completa'), findsOneWidget);
+    });
+
+    testWidgets('el campo admite una clave de desarrollo, no solo códigos de 8',
+        (tester) async {
+      await _montar(tester, LoginScreen(session: _SesionFalsa()));
+      await tester.tap(find.text('¿No tienes cuenta? Créala'));
+      await tester.pumpAndSettle();
+
+      // El alfabeto de las invitaciones no tiene 1 ni 0. Cuando el campo
+      // los filtraba, una clave de desarrollo que empezara con "175" no
+      // se podía ni teclear.
+      const claveDev = 'MiClave1750Segura';
+      await tester.enterText(
+          find.widgetWithText(TextFormField, 'ABCD2345'), claveDev);
+      await tester.pumpAndSettle(const Duration(milliseconds: 600));
+
+      final campo = tester.widget<TextFormField>(
+          find.widgetWithText(TextFormField, claveDev));
+      expect(campo.controller!.text, claveDev,
+          reason: 'la clave de desarrollo tiene que entrar tal cual');
+
+      // Y no se consulta al servidor: no tiene forma de invitación.
+      expect(find.textContaining('Esa clave no existe'), findsNothing);
+    });
+
+    test('distingue una clave de invitación de una de desarrollo', () {
+      expect(Session.pareceInvitacion('JAEXQUAV'), isTrue);
+      expect(Session.pareceInvitacion('jaexquav'), isTrue);
+      // Con 1 o 0 no es una invitación: el alfabeto no los tiene.
+      expect(Session.pareceInvitacion('JAEXQUA1'), isFalse);
+      expect(Session.pareceInvitacion('JAEXQUA0'), isFalse);
+      expect(Session.pareceInvitacion('MiClave1750Segura'), isFalse);
+      expect(Session.pareceInvitacion('CORTA'), isFalse);
+    });
+
+    testWidgets('avisa a qué liga entra antes de crear la cuenta',
+        (tester) async {
+      final sesion = _SesionFalsa(
+        clavesConocidas: {
+          'JAEXQUAV': const ClaveRevisada(
+            valida: true,
+            tipo: 'capitan',
+            descripcion: 'Entras a Liga de Prueba como capitán y podrás fundar tu equipo.',
+            grupo: 'Liga de Prueba',
+          ),
+        },
+      );
+      await _montar(tester, LoginScreen(session: sesion));
+
+      await tester.tap(find.text('¿No tienes cuenta? Créala'));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(
+          find.widgetWithText(TextFormField, 'ABCD2345'), 'JAEXQUAV');
+      await tester.pumpAndSettle(const Duration(milliseconds: 600));
+
+      expect(
+        find.text('Entras a Liga de Prueba como capitán y podrás fundar tu equipo.'),
+        findsOneWidget,
+      );
     });
   });
 

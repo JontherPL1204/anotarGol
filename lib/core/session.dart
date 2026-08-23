@@ -25,12 +25,14 @@ class Session extends ChangeNotifier {
     this.auth = const AuthRepository(),
     this.teams = const TeamsRepository(),
     this.groups = const GroupsRepository(),
+    this.dev = const DevRepository(),
   }) : teamId = teamId ?? AppEnv.defaultTeamId;
 
   final String teamId;
   final AuthRepository auth;
   final TeamsRepository teams;
   final GroupsRepository groups;
+  final DevRepository dev;
 
   StreamSubscription<AuthState>? _suscripcion;
   User? _usuario;
@@ -57,6 +59,9 @@ class Session extends ChangeNotifier {
   /// equipos rivales. Cualquier integrante del club, no solo el staff.
   bool get puedeEditarPlantilla => _rol?.canEditSquad ?? false;
 
+  /// Cuenta de desarrollo. No pertenece a ninguna liga.
+  bool get esDev => situacion.soyDev;
+
   // -------------------------------------------------------------------
   // Grupos
   // -------------------------------------------------------------------
@@ -73,6 +78,12 @@ class Session extends ChangeNotifier {
 
   /// Solo tiene sentido ofrecer el selector si hay mas de uno.
   bool get puedeCambiarDeGrupo => _grupos.length > 1;
+
+  bool _grupoElegido = false;
+
+  /// Con varias ligas hay que preguntar a cual entra, una vez por
+  /// sesion. Con una sola, preguntar seria un tramite.
+  bool get debeElegirGrupo => _grupos.length > 1 && !_grupoElegido;
 
   /// Donde quedo parado el usuario. Decide la pantalla de arranque.
   MiSituacion situacion = const MiSituacion();
@@ -95,12 +106,31 @@ class Session extends ChangeNotifier {
     }
   }
 
-  /// Canjea la clave, sea de liga o de equipo, y actualiza la situacion.
-  Future<String?> canjearClave(String codigo) => _intentar(() async {
-        await groups.canjearClave(codigo);
-        await cargarGrupos();
-        await cargarSituacion();
-      });
+  /// Las claves de liga y de equipo son ocho caracteres de un alfabeto
+  /// sin O/0 ni I/1. La de desarrollo es una contrasena larga.
+  static bool pareceInvitacion(String c) {
+    final t = c.trim().toUpperCase();
+    return t.length == 8 && RegExp(r'^[A-HJ-NP-Z2-9]{8}$').hasMatch(t);
+  }
+
+  /// Canjea la clave, sea de liga, de equipo o de acceso de desarrollo.
+  ///
+  /// Quien recibe un codigo no tiene por que saber de que tipo es: se
+  /// decide por la forma.
+  Future<String?> canjearClave(String codigo) {
+    final c = codigo.trim();
+
+    return _intentar(() async {
+      if (pareceInvitacion(c)) {
+        await groups.canjearClave(c);
+      } else {
+        final r = await dev.canjearClaveDev(c);
+        if (!r.ok) throw StateError(r.motivo ?? 'Esa clave no sirve.');
+      }
+      await cargarGrupos();
+      await cargarSituacion();
+    });
+  }
 
   Future<void> cargarSituacion() async {
     if (!hayBackend || !haySesion) {
@@ -144,6 +174,21 @@ class Session extends ChangeNotifier {
     final elegido = _grupos.where((g) => g.id == grupoId).firstOrNull;
     if (elegido == null || elegido.id == _grupoActual?.id) return;
     _grupoActual = elegido;
+    notifyListeners();
+  }
+
+  /// La eleccion explicita del selector: fija la liga y deja de
+  /// preguntar hasta la proxima sesion.
+  void elegirGrupo(String grupoId) {
+    final elegido = _grupos.where((g) => g.id == grupoId).firstOrNull;
+    if (elegido != null) _grupoActual = elegido;
+    _grupoElegido = true;
+    notifyListeners();
+  }
+
+  /// Volver a preguntar, para el cambio de liga desde el perfil.
+  void volverAElegirGrupo() {
+    _grupoElegido = false;
     notifyListeners();
   }
 
@@ -266,6 +311,7 @@ class Session extends ChangeNotifier {
     _rol = null;
     _grupos = const [];
     _grupoActual = null;
+    _grupoElegido = false;
     situacion = const MiSituacion();
     notifyListeners();
   }
@@ -315,6 +361,9 @@ class Session extends ChangeNotifier {
     }
     if (m.contains('email not confirmed')) {
       return 'Tienes que confirmar el correo antes de entrar.';
+    }
+    if (m.contains('esa clave no sirve') || m.contains('clave incorrecta')) {
+      return 'Esa clave no existe o ya fue usada.';
     }
     if (m.contains('cédula no es válida') || m.contains('cedula no es valida')) {
       return 'Esa cédula no es válida. Revisa los 10 dígitos.';

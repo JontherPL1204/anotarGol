@@ -184,12 +184,12 @@ lib/
   screens/       pantallas
   widgets/       componentes reutilizables
 supabase/
-  migrations/    40 migraciones, en orden
+  migrations/    42 migraciones, en orden
   seed.sql       liga de prueba con dos equipos listos para jugar
   seed.sql       club de ejemplo
   schema_completo.sql  las migraciones concatenadas (generado)
 docs/            plan, auditoría, diseño de retos y chat, evidencia académica
-test/            85 pruebas
+test/            90 pruebas
 ```
 
 Regla del proyecto: **los widgets no hablan con Supabase**. Pasan por los
@@ -200,7 +200,7 @@ tocan la red.
 
 ```bash
 flutter analyze     # sin issues
-flutter test        # 85 pruebas
+flutter test        # 90 pruebas
 ```
 
 ## Estado

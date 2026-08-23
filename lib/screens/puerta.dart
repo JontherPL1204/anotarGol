@@ -4,6 +4,8 @@ import 'package:google_fonts/google_fonts.dart';
 import '../core/session.dart';
 import '../homescreen.dart';
 import 'clave_screen.dart';
+import 'dev_panel_screen.dart';
+import 'elegir_liga_screen.dart';
 import 'fundar_equipo_screen.dart';
 
 /// Decide qué pantalla ve el usuario al abrir la app.
@@ -32,6 +34,17 @@ class Puerta extends StatelessWidget {
         // Con sesión pero sin liga: la clave es lo único que hay.
         if (session.situacion.necesitaClave) {
           return ClaveScreen(session: session);
+        }
+
+        // El dev no pertenece a ninguna liga por diseño: exigirle una
+        // clave de liga lo dejaría atrapado. Entra directo a su panel.
+        if (session.esDev && !session.situacion.tieneGrupo) {
+          return const DevPanelScreen();
+        }
+
+        // Con varias ligas, lo primero es saber en cuál trabaja.
+        if (session.debeElegirGrupo) {
+          return ElegirLigaScreen(session: session);
         }
 
         // Entró con clave de capitán y todavía no armó su equipo.

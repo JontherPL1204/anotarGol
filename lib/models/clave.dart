@@ -62,6 +62,7 @@ class MiSituacion {
     this.equipo,
     this.soyCapitan = false,
     this.tengoCedula = false,
+    this.soyDev = false,
   });
 
   final bool tieneGrupo;
@@ -74,14 +75,20 @@ class MiSituacion {
   final bool soyCapitan;
   final bool tengoCedula;
 
+  /// Cuenta de desarrollo. No pertenece a ninguna liga por diseno, asi
+  /// que las reglas de abajo tienen que dejarla pasar.
+  final bool soyDev;
+
   /// Sin grupo no hay nada que mostrar: lo primero es la clave.
-  bool get necesitaClave => !tieneGrupo;
+  bool get necesitaClave => !tieneGrupo && !soyDev;
 
   /// Entró con clave de capitán pero todavía no armó su equipo.
-  bool get debeFundarEquipo => tieneGrupo && !tieneEquipo && puedeFundar;
+  bool get debeFundarEquipo =>
+      tieneGrupo && !tieneEquipo && puedeFundar && !soyDev;
 
   /// Está en la liga pero nadie lo fichó y no puede fundar.
-  bool get esperaQueLoFichen => tieneGrupo && !tieneEquipo && !puedeFundar;
+  bool get esperaQueLoFichen =>
+      tieneGrupo && !tieneEquipo && !puedeFundar && !soyDev;
 
   factory MiSituacion.fromMap(Map<String, dynamic> map) => MiSituacion(
         tieneGrupo: (map['tiene_grupo'] as bool?) ?? false,
@@ -93,5 +100,6 @@ class MiSituacion {
         equipo: map['equipo'] as String?,
         soyCapitan: (map['soy_capitan'] as bool?) ?? false,
         tengoCedula: (map['tengo_cedula'] as bool?) ?? false,
+        soyDev: (map['soy_dev'] as bool?) ?? false,
       );
 }
