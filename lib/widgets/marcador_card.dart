@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+import '../core/session.dart';
 import '../data/club_data_source.dart';
 import '../models/models.dart';
 
@@ -16,9 +17,12 @@ import '../models/models.dart';
 ///   * **Local** - no hay backend o no hay partido en curso. Funciona
 ///     como el contador en memoria de la primera version de la app.
 class MarcadorCard extends StatefulWidget {
-  const MarcadorCard({super.key, required this.dataSource});
+  const MarcadorCard({super.key, required this.dataSource, this.session});
 
   final ClubDataSource dataSource;
+
+  /// Si es `null` no se comprueban permisos (modo local y pruebas).
+  final Session? session;
 
   @override
   State<MarcadorCard> createState() => _MarcadorCardState();
@@ -36,6 +40,16 @@ class _MarcadorCardState extends State<MarcadorCard> {
 
   bool get _enVivo => _partido != null;
   int get _goles => _partido?.teamScore ?? _golesLocales;
+
+  /// El contador local lo mueve cualquiera. Sobre un partido real hace
+  /// falta rol de cuerpo tecnico: es la misma regla que aplica RLS en la
+  /// base, adelantada a la interfaz para no ofrecer un boton que va a
+  /// fallar.
+  bool get _puedeAnotar {
+    if (!_enVivo) return true;
+    final s = widget.session;
+    return s == null || s.puedeEditar;
+  }
 
   @override
   void initState() {
@@ -76,6 +90,11 @@ class _MarcadorCardState extends State<MarcadorCard> {
       return;
     }
 
+    if (!_puedeAnotar) {
+      _avisar('Necesitas ser del cuerpo técnico del club para anotar goles.');
+      return;
+    }
+
     setState(() => _enviando = true);
     try {
       final actualizado = await widget.dataSource.logGoal(_partido!.id);
@@ -92,6 +111,11 @@ class _MarcadorCardState extends State<MarcadorCard> {
   Future<void> _reiniciarMarcador() async {
     if (!_enVivo) {
       setState(() => _golesLocales = 0);
+      return;
+    }
+
+    if (!_puedeAnotar) {
+      _avisar('Necesitas ser del cuerpo técnico del club para reiniciar el marcador.');
       return;
     }
 
@@ -187,7 +211,7 @@ class _MarcadorCardState extends State<MarcadorCard> {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               ElevatedButton.icon(
-                onPressed: _enviando ? null : _anotarGol,
+                onPressed: (_enviando || !_puedeAnotar) ? null : _anotarGol,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF1B5E20),
                   foregroundColor: Colors.white,
@@ -208,7 +232,7 @@ class _MarcadorCardState extends State<MarcadorCard> {
               const SizedBox(width: 8),
 
               IconButton.filledTonal(
-                onPressed: _reiniciarMarcador,
+                onPressed: _puedeAnotar ? _reiniciarMarcador : null,
                 icon: const Icon(Icons.refresh),
                 tooltip: 'Reiniciar marcador',
                 style: IconButton.styleFrom(
@@ -218,6 +242,23 @@ class _MarcadorCardState extends State<MarcadorCard> {
               ),
             ],
           ),
+
+          if (!_puedeAnotar) ...[
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.lock_outline, size: 14, color: Colors.grey.shade600),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    'Solo el cuerpo técnico puede anotar',
+                    style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                  ),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );

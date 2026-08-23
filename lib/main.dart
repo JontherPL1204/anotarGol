@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:diego_javier_lopez_zambrano/homescreen.dart';
+import 'package:diego_javier_lopez_zambrano/core/session.dart';
 import 'package:diego_javier_lopez_zambrano/core/supabase_service.dart';
 
 Future<void> main() async {
@@ -10,11 +11,18 @@ Future<void> main() async {
   // la app arranca en modo local con los datos de ejemplo.
   await SupabaseService.init();
 
-  runApp(const MyApp());
+  // Recupera la sesion guardada, si la hay, antes de pintar. Asi la app
+  // no aparece como invitado durante un instante para luego cambiar.
+  final session = Session();
+  await session.iniciar();
+
+  runApp(MyApp(session: session));
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+  const MyApp({super.key, required this.session});
+
+  final Session session;
 
   @override
   Widget build(BuildContext context) {
@@ -30,7 +38,7 @@ class MyApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: const Homescreen(),
+      home: Homescreen(session: session),
     );
   }
 }

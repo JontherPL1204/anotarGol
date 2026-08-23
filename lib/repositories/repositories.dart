@@ -9,5 +9,6 @@ export 'auth_repository.dart';
 export 'match_events_repository.dart';
 export 'matches_repository.dart';
 export 'players_repository.dart';
+export 'rivals_repository.dart';
 export 'stats_repository.dart';
 export 'teams_repository.dart';

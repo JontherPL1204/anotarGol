@@ -18,6 +18,13 @@ enum TeamRole {
   /// Puede editar jugadores, partidos y eventos.
   bool get canEdit => this == owner || this == admin || this == coach;
 
+  /// Puede editar la plantilla: nombres, dorsales y posiciones.
+  ///
+  /// Mas amplio que [canEdit] a proposito: el equipo se administra entre
+  /// todos sus integrantes, no solo el cuerpo tecnico. Espeja la funcion
+  /// `can_edit_squad` de la migracion 06.
+  bool get canEditSquad => this != viewer;
+
   /// Puede gestionar miembros y ajustes del club.
   bool get canAdmin => this == owner || this == admin;
 }

@@ -34,6 +34,38 @@ class StatsRepository {
     return rows.map(PlayerStats.fromMap).toList();
   }
 
+  /// Ranking de goleadores: los del club y los de los rivales.
+  ///
+  /// [soloDelClub] deja fuera a los rivales, para la tabla "nuestros
+  /// goleadores".
+  Future<List<Goleador>> fetchGoleadores(
+    String teamId, {
+    bool soloDelClub = false,
+    int limit = 50,
+  }) async {
+    var query = _db.from('goleadores').select().eq('team_id', teamId);
+    if (soloDelClub) query = query.eq('bando', 'nuestro');
+
+    final rows = await query.order('goles', ascending: false).limit(limit);
+    return rows.map(Goleador.fromMap).toList();
+  }
+
+  /// Historial: un gol por fila, del mas reciente al mas viejo.
+  Future<List<GolHistorial>> fetchHistorialGoles(
+    String teamId, {
+    String? matchId,
+    int limit = 100,
+  }) async {
+    var query = _db.from('historial_goles').select().eq('team_id', teamId);
+    if (matchId != null) query = query.eq('match_id', matchId);
+
+    final rows = await query
+        .order('kickoff_at', ascending: false)
+        .order('minute', ascending: true, nullsFirst: false)
+        .limit(limit);
+    return rows.map(GolHistorial.fromMap).toList();
+  }
+
   Future<PlayerStats?> fetchPlayerStats(String playerId) async {
     final row = await _db
         .from('player_stats')
