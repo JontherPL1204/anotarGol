@@ -26,7 +26,7 @@ class SupabaseService {
     try {
       await Supabase.initialize(
         url: AppEnv.supabaseUrl,
-        anonKey: AppEnv.supabaseAnonKey,
+        publishableKey: AppEnv.supabasePublishableKey,
         authOptions: const FlutterAuthClientOptions(
           authFlowType: AuthFlowType.pkce,
         ),

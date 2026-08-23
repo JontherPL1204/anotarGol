@@ -3,6 +3,8 @@
 /// Regla del proyecto: los widgets hablan con estos repositorios, nunca
 /// con `Supabase.instance.client` directamente. Asi la UI no depende del
 /// backend y se puede sustituir por una fuente local en las pruebas.
+library;
+
 export 'auth_repository.dart';
 export 'match_events_repository.dart';
 export 'matches_repository.dart';

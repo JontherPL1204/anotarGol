@@ -4,6 +4,8 @@
 /// lanza excepcion: ante un valor desconocido cae al valor por defecto,
 /// para que una app vieja no se caiga contra una base mas nueva.
 
+library;
+
 enum TeamRole {
   owner,
   admin,

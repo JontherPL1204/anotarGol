@@ -10,9 +10,13 @@ flutter run --dart-define-from-file=env/dev.json
 
 `dev.json` y `prod.json` estan en `.gitignore`: no se versionan.
 
-## ¿Por qué no dejar la anon key en el código?
+> El nombre viejo `SUPABASE_ANON_KEY` sigue funcionando: Supabase
+> renombró el concepto a *publishable key*, pero el valor cumple la
+> misma función y la app acepta los dos nombres.
 
-La anon key es **pública por diseño** (viaja dentro del APK y cualquiera
+## ¿Por qué no dejar la clave publicable en el código?
+
+La clave publicable es **pública por diseño** (viaja dentro del APK y cualquiera
 puede extraerla). Lo que protege los datos no es esa clave, sino las
 políticas RLS de `supabase/migrations/…_04_rls.sql`.
 
