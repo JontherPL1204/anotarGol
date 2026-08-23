@@ -22,19 +22,52 @@
 -- funcionan al pegar este archivo en el SQL Editor de Supabase.
 
 -- ---------------------------------------------------------------------
+-- Liga de prueba
+-- ---------------------------------------------------------------------
+-- El club de ejemplo vive dentro de una liga, como cualquier otro: un
+-- equipo suelto contradice el modelo, donde nada se ve sin pertenecer a
+-- un grupo.
+--
+-- Se inserta directo y no con crear_grupo() porque esa funcion exige ser
+-- dev, y el seed corre como postgres sin sesion.
+insert into public.groups (id, name, slug, description, created_by)
+values (
+  '9c000000-0000-4000-8000-000000000001',
+  'Liga de Prueba',
+  'liga-de-prueba',
+  'Liga con el club de ejemplo, para probar la app.',
+  null
+)
+on conflict (id) do nothing;
+
+-- Clave de capitan para entrar. Se genera distinta en cada instalacion:
+-- una clave fija en un repositorio publico es una clave filtrada.
+insert into public.group_invites (group_id, code, created_by, para_capitan, para_admin)
+select '9c000000-0000-4000-8000-000000000001',
+       public.generar_codigo_invitacion(), null, true, true
+where not exists (
+  select 1 from public.group_invites
+  where group_id = '9c000000-0000-4000-8000-000000000001'
+);
+
+-- ---------------------------------------------------------------------
 -- Club
 -- ---------------------------------------------------------------------
-insert into public.teams (id, name, short_name, slug, primary_color, secondary_color, is_public)
+insert into public.teams (id, group_id, name, short_name, slug,
+                          primary_color, secondary_color, is_public)
 values (
   'a0000000-0000-4000-8000-000000000001',
+  '9c000000-0000-4000-8000-000000000001',
   'Pasión Futbolera FC',
   'PFC',
   'pasion-futbolera-fc',
   '#1B5E20',
   '#FFD700',
-  true
+  false
 )
-on conflict (id) do nothing;
+on conflict (id) do update
+  set group_id = excluded.group_id,
+      is_public = false;
 
 -- ---------------------------------------------------------------------
 -- Temporada
@@ -175,8 +208,19 @@ on conflict (id) do nothing;
 -- ---------------------------------------------------------------------
 -- Verificacion rapida
 -- ---------------------------------------------------------------------
--- Debe devolver: Deportivo Andino | finished | 2 | 1 | W
-select opponent_name, status, team_score, opponent_score, result
-from public.match_summary
-where team_id = 'a0000000-0000-4000-8000-000000000001'
-order by kickoff_at;
+-- El marcador 2-1 lo calcula el trigger a partir de los eventos: si sale
+-- asi, la parte mas delicada del esquema esta funcionando.
+select m.opponent_name, m.status, m.team_score, m.opponent_score,
+       case when m.status = 'finished' and m.team_score > m.opponent_score
+            then 'W' end as result
+from public.matches m
+where m.team_id = 'a0000000-0000-4000-8000-000000000001'
+order by m.kickoff_at;
+
+-- La clave para entrar a la liga de prueba. Anotala: es distinta en
+-- cada instalacion.
+select g.name as liga, t.name as equipo, gi.code as clave_de_capitan
+from public.groups g
+join public.teams t on t.group_id = g.id
+join public.group_invites gi on gi.group_id = g.id
+where g.id = '9c000000-0000-4000-8000-000000000001';

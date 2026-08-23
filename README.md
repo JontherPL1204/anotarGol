@@ -185,10 +185,11 @@ lib/
   widgets/       componentes reutilizables
 supabase/
   migrations/    39 migraciones, en orden
+  seed.sql       liga de prueba con el club de ejemplo dentro
   seed.sql       club de ejemplo
   schema_completo.sql  las migraciones concatenadas (generado)
 docs/            plan, auditoría, diseño de retos y chat, evidencia académica
-test/            70 pruebas
+test/            85 pruebas
 ```
 
 Regla del proyecto: **los widgets no hablan con Supabase**. Pasan por los
@@ -199,7 +200,7 @@ tocan la red.
 
 ```bash
 flutter analyze     # sin issues
-flutter test        # 70 pruebas
+flutter test        # 85 pruebas
 ```
 
 ## Estado
@@ -213,9 +214,13 @@ de la clave y no puede saltarla. La app le dice **qué hace esa clave
 antes de canjearla**, y después lo lleva a fundar su equipo o al equipo
 al que acaba de entrar.
 
-Lo que está en la base pero todavía no tiene pantalla: fundar equipo,
-retos entre capitanes, los dos chats, cronograma, tabla de posiciones y
-los controles del reloj.
+Y hay panel de desarrollo: canjear la clave de acceso, ver todas las
+ligas con sus equipos, crear ligas, renombrarlas, repartir claves de
+capitán y borrar. Se cierra solo a los 30 minutos.
+
+Lo que está en la base pero todavía no tiene pantalla: retos entre
+capitanes, los dos chats, cronograma, tabla de posiciones y los
+controles del reloj.
 
 Antes de publicar en las tiendas hay pendientes que no son de código:
 política de privacidad, formulario de datos, y —por tener chat— la

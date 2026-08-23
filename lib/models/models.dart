@@ -2,6 +2,7 @@
 library;
 
 export 'clave.dart';
+export 'dev.dart';
 export 'enums.dart';
 export 'equipo_del_grupo.dart';
 export 'football_match.dart';

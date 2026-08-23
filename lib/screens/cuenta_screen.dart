@@ -3,6 +3,7 @@ import 'package:google_fonts/google_fonts.dart';
 
 import '../core/session.dart';
 import '../models/models.dart';
+import 'dev_acceso_screen.dart';
 
 /// Quien eres y que puedes hacer en este club.
 ///
@@ -139,6 +140,23 @@ class CuentaScreen extends StatelessWidget {
               ],
 
               const SizedBox(height: 24),
+
+              // La entrada al panel de desarrollo esta a la vista pero no
+              // es un atajo: sin una clave valida no hace nada.
+              OutlinedButton.icon(
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const DevAccesoScreen()),
+                ),
+                icon: const Icon(Icons.shield_moon_outlined),
+                label: const Text('Tengo una clave de acceso'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.blueGrey.shade700,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+              ),
+
+              const SizedBox(height: 12),
 
               OutlinedButton.icon(
                 onPressed: session.ocupado ? null : () => _salir(context),
