@@ -35,6 +35,26 @@ Son 8 caracteres en mayúscula, sin `O`/`0` ni `I`/`1`, para poder
 dictarlas en voz alta sin que nadie las escriba mal. Quien recibe un
 código no necesita saber de qué tipo es: `canjear_clave()` lo averigua.
 
+### Nombres
+
+La **liga** nace como "La Liga A", y las siguientes B, C… (después de la
+Z sigue AA, AB, como las columnas de una hoja de cálculo). Solo el dev
+puede renombrarla; el administrador de la liga puede tocar sus ajustes
+pero no su identidad.
+
+El **equipo** lo nombra su capitán y el nombre es obligatorio. El escudo
+es opcional.
+
+Cada club lleva además un número dentro de su liga, asignado al crearlo:
+
+| Quién mira | Qué ve |
+|---|---|
+| El dev | `Equipo 1 (Halcones FC)` |
+| Capitanes y jugadores | `Halcones FC` |
+
+El número le da al dev una referencia estable para hablar de un club, y
+ordena la liga.
+
 ### La cédula es la identidad
 
 El capitán carga sus 11 jugadores por cédula **antes** de que su gente se
@@ -147,7 +167,7 @@ lib/
   screens/       pantallas
   widgets/       componentes reutilizables
 supabase/
-  migrations/    33 migraciones, en orden
+  migrations/    35 migraciones, en orden
   seed.sql       club de ejemplo
   schema_completo.sql  las migraciones concatenadas (generado)
 docs/            plan, auditoría, diseño de retos y chat, evidencia académica
