@@ -64,6 +64,24 @@ class RivalsRepository {
   // Jugadores del rival
   // -------------------------------------------------------------------
 
+  /// La plantilla del rival de un partido concreto.
+  ///
+  /// Se pasa por el partido en vez de pedir el rival, porque quien canta
+  /// un gol tiene el partido delante, no el id del rival. Si el partido
+  /// no tiene rival cargado se devuelve vacio: es lo normal cuando el
+  /// contrario es un equipo de la liga y no una ficha hecha a mano.
+  Future<List<RivalPlayer>> plantillaDelPartido(String matchId) async {
+    final filas = await _db
+        .from('matches')
+        .select('rival_id')
+        .eq('id', matchId)
+        .limit(1);
+    if (filas.isEmpty) return const [];
+    final rivalId = filas.first['rival_id'] as String?;
+    if (rivalId == null) return const [];
+    return fetchPlayers(rivalId);
+  }
+
   Future<List<RivalPlayer>> fetchPlayers(String rivalId) async {
     final rows = await _db
         .from('rival_players')

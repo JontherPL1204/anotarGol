@@ -11,6 +11,7 @@ export 'goleador.dart';
 export 'grupo.dart';
 export 'invitacion.dart';
 export 'match_event.dart';
+export 'partido_vivo.dart';
 export 'player.dart';
 export 'plantilla.dart';
 export 'player_stats.dart';

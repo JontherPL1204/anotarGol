@@ -31,7 +31,37 @@ abstract class ClubDataSource {
   Future<List<MatchEvent>> fetchEvents(String matchId);
 
   /// Registra un gol. Devuelve el partido con el marcador ya actualizado.
-  Future<FootballMatch?> logGoal(String matchId);
+  ///
+  /// [playerId] es de los nuestros y [rivalPlayerId] del rival. Cada lado
+  /// solo acepta el suyo: la base rechaza la mezcla.
+  Future<FootballMatch?> logGoal(
+    String matchId, {
+    String? playerId,
+    String? rivalPlayerId,
+    TeamSide side = TeamSide.us,
+  });
+
+  /// Tarjeta amarilla o roja, con el mismo reparto de jugador por lado.
+  Future<void> logCard(
+    String matchId, {
+    required MatchEventType type,
+    String? playerId,
+    String? rivalPlayerId,
+    TeamSide side = TeamSide.us,
+  });
+
+  /// El partido del dia con su reloj y su fase, o `null` si no hay.
+  Future<PartidoVivo?> partidoDelDia();
+
+  /// La plantilla del rival, para poder decir quien anoto.
+  Future<List<RivalPlayer>> fetchRivalPlayers(String matchId);
+
+  /// El reloj. `iniciar` es lo unico que pone el partido en juego, y sin
+  /// eso la base no acepta eventos.
+  Future<void> iniciarPartido(String matchId);
+  Future<void> irAlDescanso(String matchId);
+  Future<void> iniciarSegundoTiempo(String matchId);
+  Future<void> finalizarPartido(String matchId, {int agregados});
 
   /// Borra los goles del partido (el "reiniciar marcador" honesto).
   Future<void> clearGoals(String matchId);
@@ -67,7 +97,41 @@ class LocalClubDataSource implements ClubDataSource {
   Future<List<MatchEvent>> fetchEvents(String matchId) async => const [];
 
   @override
-  Future<FootballMatch?> logGoal(String matchId) async => null;
+  Future<FootballMatch?> logGoal(
+    String matchId, {
+    String? playerId,
+    String? rivalPlayerId,
+    TeamSide side = TeamSide.us,
+  }) async => null;
+
+  @override
+  Future<void> logCard(
+    String matchId, {
+    required MatchEventType type,
+    String? playerId,
+    String? rivalPlayerId,
+    TeamSide side = TeamSide.us,
+  }) async {}
+
+  // Sin backend no hay reloj que mover: el modo local es una demo con
+  // datos de ejemplo, no un partido de verdad.
+  @override
+  Future<PartidoVivo?> partidoDelDia() async => null;
+
+  @override
+  Future<List<RivalPlayer>> fetchRivalPlayers(String matchId) async => const [];
+
+  @override
+  Future<void> iniciarPartido(String matchId) async {}
+
+  @override
+  Future<void> irAlDescanso(String matchId) async {}
+
+  @override
+  Future<void> iniciarSegundoTiempo(String matchId) async {}
+
+  @override
+  Future<void> finalizarPartido(String matchId, {int agregados = 0}) async {}
 
   @override
   Future<void> clearGoals(String matchId) async {}
@@ -83,12 +147,14 @@ class SupabaseClubDataSource implements ClubDataSource {
     this.players = const PlayersRepository(),
     this.matches = const MatchesRepository(),
     this.events = const MatchEventsRepository(),
+    this.rivals = const RivalsRepository(),
   });
 
   final String teamId;
   final PlayersRepository players;
   final MatchesRepository matches;
   final MatchEventsRepository events;
+  final RivalsRepository rivals;
 
   @override
   bool get isRemote => true;
@@ -107,12 +173,60 @@ class SupabaseClubDataSource implements ClubDataSource {
       events.fetchByMatch(matchId);
 
   @override
-  Future<FootballMatch?> logGoal(String matchId) async {
+  Future<FootballMatch?> logGoal(
+    String matchId, {
+    String? playerId,
+    String? rivalPlayerId,
+    TeamSide side = TeamSide.us,
+  }) async {
     // Solo se registra el evento: el marcador lo recalcula un trigger de
     // Postgres, asi que hay que volver a leer el partido para verlo.
-    await events.logGoal(matchId: matchId);
+    await events.logGoal(
+      matchId: matchId,
+      playerId: side == TeamSide.us ? playerId : null,
+      rivalPlayerId: side == TeamSide.them ? rivalPlayerId : null,
+      side: side,
+    );
     return matches.fetchLive(teamId);
   }
+
+  @override
+  Future<void> logCard(
+    String matchId, {
+    required MatchEventType type,
+    String? playerId,
+    String? rivalPlayerId,
+    TeamSide side = TeamSide.us,
+  }) async {
+    await events.logTarjeta(
+      matchId: matchId,
+      type: type,
+      playerId: side == TeamSide.us ? playerId : null,
+      rivalPlayerId: side == TeamSide.them ? rivalPlayerId : null,
+      side: side,
+    );
+  }
+
+  @override
+  Future<PartidoVivo?> partidoDelDia() => matches.partidoDelDia(teamId);
+
+  @override
+  Future<List<RivalPlayer>> fetchRivalPlayers(String matchId) =>
+      rivals.plantillaDelPartido(matchId);
+
+  @override
+  Future<void> iniciarPartido(String matchId) => matches.iniciar(matchId);
+
+  @override
+  Future<void> irAlDescanso(String matchId) => matches.irAlDescanso(matchId);
+
+  @override
+  Future<void> iniciarSegundoTiempo(String matchId) =>
+      matches.iniciarSegundoTiempo(matchId);
+
+  @override
+  Future<void> finalizarPartido(String matchId, {int agregados = 0}) =>
+      matches.finalizar(matchId, agregados: agregados);
 
   @override
   Future<void> clearGoals(String matchId) => events.clearGoals(matchId);

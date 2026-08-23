@@ -45,6 +45,38 @@ class MatchesRepository {
   }
 
   /// El partido que se esta jugando ahora, si hay alguno.
+  /// El partido del día con su reloj y su fase, desde `partido_en_vivo`.
+  ///
+  /// Devuelve tambien los que aun no empiezan: saber que falta media hora
+  /// es parte de poder empezarlo a tiempo.
+  Future<PartidoVivo?> partidoDelDia(String teamId) async {
+    final filas = await _db
+        .from('partido_en_vivo')
+        .select()
+        .eq('team_id', teamId)
+        .order('kickoff_at', ascending: true)
+        .limit(1);
+    if (filas.isEmpty) return null;
+    return PartidoVivo.fromMap(Map<String, dynamic>.from(filas.first));
+  }
+
+  /// Arranca el reloj. Es lo unico que pone el partido en `live`, y sin
+  /// eso la base no acepta ni un gol ni una tarjeta (migracion 45).
+  Future<void> iniciar(String matchId) =>
+      _db.rpc('iniciar_partido', params: {'p_match_id': matchId});
+
+  Future<void> irAlDescanso(String matchId) =>
+      _db.rpc('ir_al_descanso', params: {'p_match_id': matchId});
+
+  Future<void> iniciarSegundoTiempo(String matchId) =>
+      _db.rpc('iniciar_segundo_tiempo', params: {'p_match_id': matchId});
+
+  Future<void> finalizar(String matchId, {int agregados = 0}) =>
+      _db.rpc('finalizar_partido', params: {
+        'p_match_id': matchId,
+        'p_agregados': agregados,
+      });
+
   Future<FootballMatch?> fetchLive(String teamId) async {
     final row = await _db
         .from('match_summary')

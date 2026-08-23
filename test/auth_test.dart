@@ -9,6 +9,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:diego_javier_lopez_zambrano/core/session.dart';
 import 'package:diego_javier_lopez_zambrano/data/club_data_source.dart';
+import 'package:diego_javier_lopez_zambrano/data/demo_club.dart';
 import 'package:diego_javier_lopez_zambrano/homescreen.dart';
 import 'package:diego_javier_lopez_zambrano/models/models.dart';
 import 'package:diego_javier_lopez_zambrano/screens/login_screen.dart';
@@ -91,7 +92,7 @@ class _FuenteEnVivo implements ClubDataSource {
   @override
   bool get isRemote => true;
   @override
-  Future<List<Player>> fetchPlayers() async => const [];
+  Future<List<Player>> fetchPlayers() async => DemoClub.players;
   @override
   Future<FootballMatch?> fetchNextMatch() async => _partido;
   @override
@@ -99,10 +100,50 @@ class _FuenteEnVivo implements ClubDataSource {
   @override
   Future<List<MatchEvent>> fetchEvents(String matchId) async => const [];
   @override
-  Future<FootballMatch?> logGoal(String matchId) async {
+  Future<FootballMatch?> logGoal(
+    String matchId, {
+    String? playerId,
+    String? rivalPlayerId,
+    TeamSide side = TeamSide.us,
+  }) async {
     golesRegistrados++;
     return _partido;
   }
+
+  @override
+  Future<void> logCard(
+    String matchId, {
+    required MatchEventType type,
+    String? playerId,
+    String? rivalPlayerId,
+    TeamSide side = TeamSide.us,
+  }) async {}
+
+  @override
+  Future<PartidoVivo?> partidoDelDia() async => PartidoVivo(
+        id: 'm1',
+        teamId: 't1',
+        equipo: 'Pasión Futbolera FC',
+        rival: 'Rival FC',
+        fase: FasePartido.primerTiempo,
+        kickoffAt: DateTime(2026, 8, 25, 20),
+        minuto: 12,
+      );
+
+  @override
+  Future<List<RivalPlayer>> fetchRivalPlayers(String matchId) async => const [];
+
+  @override
+  Future<void> iniciarPartido(String matchId) async {}
+
+  @override
+  Future<void> irAlDescanso(String matchId) async {}
+
+  @override
+  Future<void> iniciarSegundoTiempo(String matchId) async {}
+
+  @override
+  Future<void> finalizarPartido(String matchId, {int agregados = 0}) async {}
   @override
   Future<void> clearGoals(String matchId) async {}
   @override
@@ -184,6 +225,8 @@ void main() {
       expect(find.text('Solo el cuerpo técnico puede anotar'), findsNothing);
 
       await tester.tap(find.text('¡CANTAR GOL!'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Guardar'));
       await tester.pumpAndSettle();
       expect(fuente.golesRegistrados, 1);
     });

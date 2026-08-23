@@ -30,6 +30,7 @@ class MatchEventsRepository {
   Future<MatchEvent> logGoal({
     required String matchId,
     String? playerId,
+    String? rivalPlayerId,
     String? assistPlayerId,
     int? minute,
     TeamSide side = TeamSide.us,
@@ -42,6 +43,31 @@ class MatchEventsRepository {
       'p_side': side.name,
       'p_assist_player_id': assistPlayerId,
       'p_is_own_goal': isOwnGoal,
+      'p_rival_player_id': rivalPlayerId,
+    });
+    return MatchEvent.fromMap(Map<String, dynamic>.from(row as Map));
+  }
+
+  /// Tarjeta amarilla o roja.
+  ///
+  /// Va por `log_tarjeta` y no por un insert suelto, para que pase por
+  /// las mismas comprobaciones que el gol: el partido tiene que estar en
+  /// juego, y el minuto lo pone el reloj de la base.
+  Future<MatchEvent> logTarjeta({
+    required String matchId,
+    required MatchEventType type,
+    String? playerId,
+    String? rivalPlayerId,
+    TeamSide side = TeamSide.us,
+    int? minute,
+  }) async {
+    final row = await _db.rpc('log_tarjeta', params: {
+      'p_match_id': matchId,
+      'p_tipo': type.wire,
+      'p_player_id': playerId,
+      'p_side': side.name,
+      'p_rival_player_id': rivalPlayerId,
+      'p_minute': minute,
     });
     return MatchEvent.fromMap(Map<String, dynamic>.from(row as Map));
   }
