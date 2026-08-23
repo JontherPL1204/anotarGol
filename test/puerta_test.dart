@@ -31,6 +31,7 @@ class _SesionFalsa extends Session {
   final Map<String, ClaveRevisada> claves;
 
   final List<String> canjeadas = [];
+  final List<String> revisadas = [];
 
   @override
   bool get hayBackend => backend;
@@ -39,13 +40,17 @@ class _SesionFalsa extends Session {
   bool get haySesion => sesion;
 
   @override
-  Future<ClaveRevisada> revisarClave(String codigo) async =>
-      claves[codigo.toUpperCase()] ??
-      const ClaveRevisada(valida: false, motivo: 'Esa clave no existe.');
+  Future<ClaveRevisada> revisarClave(String codigo) async {
+    revisadas.add(codigo);
+    return claves[codigo.toUpperCase()] ??
+        const ClaveRevisada(valida: false, motivo: 'Esa clave no existe.');
+  }
 
   @override
   Future<String?> canjearClave(String codigo) async {
-    canjeadas.add(codigo.toUpperCase());
+    canjeadas.add(codigo);
+    // Una clave de dev no lleva a ninguna liga por sí sola.
+    if (Session.pareceClaveDev(codigo)) return null;
     final c = claves[codigo.toUpperCase()];
     if (c == null || !c.valida) return c?.motivo ?? 'Esa clave no existe.';
 
@@ -184,6 +189,34 @@ void main() {
     });
   });
 
+  group('las dos formas de clave no se solapan', () {
+    test('ocho caracteres del alfabeto: invitación', () {
+      expect(Session.pareceInvitacion('JAEXQUAV'), isTrue);
+      expect(Session.pareceInvitacion('jaexquav'), isTrue);
+      expect(Session.pareceClaveDev('JAEXQUAV'), isFalse);
+    });
+
+    test('doce dígitos o más: clave de dev', () {
+      expect(Session.pareceClaveDev('175095967612'), isTrue);
+      expect(Session.pareceInvitacion('175095967612'), isFalse);
+    });
+
+    test('las invitaciones no cambian: ocho dígitos sigue siendo una', () {
+      // El alfabeto incluye del 2 al 9, así que un código puede salir
+      // todo en números. Sigue siendo invitación: lo que las separa de
+      // una clave de dev es el largo, ocho contra doce.
+      expect(Session.pareceInvitacion('48273956'), isTrue);
+      expect(Session.pareceClaveDev('48273956'), isFalse);
+    });
+
+    test('nada tiene las dos formas a la vez', () {
+      for (final c in ['JAEXQUAV', '175095967612', '48273956', 'ABC', '']) {
+        expect(Session.pareceInvitacion(c) && Session.pareceClaveDev(c), isFalse,
+            reason: '"$c" no puede ser las dos cosas');
+      }
+    });
+  });
+
   group('ClaveScreen', () {
     testWidgets('dice qué hace la clave antes de canjearla', (tester) async {
       final sesion = _SesionFalsa(claves: {'ABCD2345': _claveCapitan});
@@ -226,18 +259,39 @@ void main() {
       expect(boton.onPressed, isNull);
     });
 
-    testWidgets('descarta letras que el alfabeto del código no admite',
+    testWidgets('deja escribir una clave de dev, que es solo dígitos',
         (tester) async {
       await _montar(tester, ClaveScreen(session: _SesionFalsa()));
 
-      // El alfabeto excluye O/0 e I/1 para poder dictar el código en voz
-      // alta. Si el usuario los teclea, se descartan.
-      await tester.enterText(find.byType(TextField), 'IOAB2345');
+      // El campo filtraba al alfabeto del código, que no tiene 1 ni 0.
+      // Una clave de dev que empezara con 175 perdía el 1 al teclearla.
+      await tester.enterText(find.byType(TextField), '175095967612');
       await tester.pumpAndSettle(const Duration(milliseconds: 600));
 
       final campo = tester.widget<TextField>(find.byType(TextField));
-      expect(campo.controller!.text, 'AB2345',
-          reason: 'la I y la O se descartan');
+      expect(campo.controller!.text, '175095967612',
+          reason: 'la clave de dev tiene que entrar tal cual');
+    });
+
+    testWidgets('con una clave de dev el botón se enciende sin revisarla',
+        (tester) async {
+      final sesion = _SesionFalsa();
+      await _montar(tester, ClaveScreen(session: sesion));
+
+      await tester.enterText(find.byType(TextField), '175095967612');
+      await tester.pumpAndSettle(const Duration(milliseconds: 600));
+
+      // No se consulta al servidor: sería un oráculo de fuerza bruta.
+      expect(sesion.revisadas, isEmpty);
+
+      // Y aun así se puede entrar. Antes el botón exigía una revisión
+      // válida, que con una clave de dev no llega nunca: quedaba muerto.
+      final boton = tester.widget<FilledButton>(find.byType(FilledButton));
+      expect(boton.onPressed, isNotNull, reason: 'el botón no puede quedar muerto');
+
+      await tester.tap(find.byType(FilledButton));
+      await tester.pumpAndSettle();
+      expect(sesion.canjeadas, ['175095967612']);
     });
 
     testWidgets('la clave de equipo dice a qué equipo entra', (tester) async {
@@ -256,16 +310,22 @@ void main() {
       expect(sesion.situacion.tieneEquipo, isTrue);
     });
 
-    testWidgets('escribe en mayúscula aunque se teclee en minúscula',
-        (tester) async {
+    testWidgets('una invitación en minúscula sirve igual', (tester) async {
       final sesion = _SesionFalsa(claves: {'ABCD2345': _claveCapitan});
       await _montar(tester, ClaveScreen(session: sesion));
 
       await tester.enterText(find.byType(TextField), 'abcd2345');
       await tester.pumpAndSettle(const Duration(milliseconds: 600));
 
+      // El campo ya no fuerza mayúsculas: hacerlo rompía una clave de
+      // dev, que sí las distingue. Normalizar es cosa del servidor, que
+      // compara con upper(btrim(code)).
       final campo = tester.widget<TextField>(find.byType(TextField));
-      expect(campo.controller!.text, 'ABCD2345');
+      expect(campo.controller!.text, 'abcd2345');
+      expect(
+        find.text('Entras a Liga Norte como capitán y podrás fundar tu equipo.'),
+        findsOneWidget,
+      );
     });
   });
 }

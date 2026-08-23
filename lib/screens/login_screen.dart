@@ -303,7 +303,13 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                       validator: (v) {
                         final t = (v ?? '').trim();
-                        if (t.length < 8) return 'Escribe la clave completa';
+                        // Dos formas válidas y disjuntas: invitación de
+                        // ocho caracteres, o clave de desarrollo de doce
+                        // dígitos o más.
+                        if (!Session.pareceInvitacion(t) &&
+                            !Session.pareceClaveDev(t)) {
+                          return 'Escribe la clave completa';
+                        }
                         // Solo se comprueba contra el servidor lo que tiene
                         // forma de invitación. La de desarrollo se verifica
                         // al canjearla: no hay forma de consultarla sin

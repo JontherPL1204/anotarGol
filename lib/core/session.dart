@@ -107,25 +107,33 @@ class Session extends ChangeNotifier {
   }
 
   /// Las claves de liga y de equipo son ocho caracteres de un alfabeto
-  /// sin O/0 ni I/1. La de desarrollo es una contrasena larga.
+  /// sin O/0 ni I/1, para poder dictarlas en voz alta sin confusion.
   static bool pareceInvitacion(String c) {
     final t = c.trim().toUpperCase();
     return t.length == 8 && RegExp(r'^[A-HJ-NP-Z2-9]{8}$').hasMatch(t);
   }
 
+  /// La clave que da acceso de desarrollo son doce digitos.
+  ///
+  /// Las dos formas no se pueden confundir porque el largo ya las
+  /// separa: una invitacion son ocho caracteres, esta son doce. Por eso
+  /// las invitaciones se quedan exactamente como estaban.
+  static bool pareceClaveDev(String c) =>
+      RegExp(r'^[0-9]{12,}$').hasMatch(c.trim());
+
   /// Canjea la clave, sea de liga, de equipo o de acceso de desarrollo.
   ///
   /// Quien recibe un codigo no tiene por que saber de que tipo es: se
-  /// decide por la forma.
+  /// decide por la forma, y las dos formas son disjuntas.
   Future<String?> canjearClave(String codigo) {
     final c = codigo.trim();
 
     return _intentar(() async {
-      if (pareceInvitacion(c)) {
-        await groups.canjearClave(c);
-      } else {
+      if (pareceClaveDev(c)) {
         final r = await dev.canjearClaveDev(c);
         if (!r.ok) throw StateError(r.motivo ?? 'Esa clave no sirve.');
+      } else {
+        await groups.canjearClave(c);
       }
       await cargarGrupos();
       await cargarSituacion();

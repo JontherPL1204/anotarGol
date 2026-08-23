@@ -1,21 +1,21 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import '../core/session.dart';
 import '../models/models.dart';
 
-/// La puerta de entrada: escribir la clave de invitación.
+/// La puerta de entrada: escribir la clave de acceso.
 ///
 /// Una cuenta que no pertenece a ninguna liga no ve nada de la app, así
 /// que esta pantalla no se puede saltar mientras no haya grupo.
 ///
-/// Hay una sola casilla, aunque existan dos tipos de clave. Quien recibe
-/// un código por WhatsApp no sabe si es de liga o de equipo, y no tiene
-/// por qué saberlo: el sistema lo averigua. Lo que sí se le muestra,
-/// antes de confirmar, es **qué le va a pasar** con esa clave.
+/// Hay una sola casilla, aunque existan tres tipos de clave: la de liga,
+/// la de equipo y la de desarrollo. Quien recibe un código por WhatsApp
+/// no sabe cuál es, y no tiene por qué saberlo: se decide por la forma.
+/// Lo que sí se le muestra, antes de confirmar, es **qué le va a pasar**
+/// con esa clave.
 class ClaveScreen extends StatefulWidget {
   const ClaveScreen({
     super.key,
@@ -55,15 +55,20 @@ class _ClaveScreenState extends State<ClaveScreen> {
   }
 
   /// Se consulta al servidor mientras escribe, pero no en cada tecla:
-  /// solo cuando el código está completo y tras una pausa corta.
+  /// solo cuando el código está completo y tras una pausa corta, y solo
+  /// si tiene forma de invitación. La de desarrollo no se consulta: se
+  /// comprueba al canjearla, o sería un oráculo de fuerza bruta.
   void _alEscribir() {
     _rebote?.cancel();
     final texto = _clave.text.trim();
 
-    if (texto.length < 8) {
-      if (_revisada != null) setState(() => _revisada = null);
+    // Siempre se repinta: el botón depende de la forma de lo escrito, y
+    // con una clave de desarrollo no llega ninguna revisión que lo haga.
+    if (!Session.pareceInvitacion(texto)) {
+      setState(() => _revisada = null);
       return;
     }
+    setState(() {});
 
     _rebote = Timer(const Duration(milliseconds: 350), () async {
       setState(() => _revisando = true);
@@ -77,10 +82,18 @@ class _ClaveScreenState extends State<ClaveScreen> {
     });
   }
 
+  /// Hay dos formas válidas y son disjuntas: una invitación de ocho
+  /// caracteres, o una clave de desarrollo de doce dígitos o más.
+  bool get _puedeEntrar {
+    final c = _clave.text.trim();
+    if (Session.pareceClaveDev(c)) return true;
+    return Session.pareceInvitacion(c) && (_revisada?.valida ?? false);
+  }
+
   Future<void> _entrar() async {
     final codigo = _clave.text.trim();
-    if (codigo.length < 8) {
-      setState(() => _error = 'La clave son 8 caracteres.');
+    if (!_puedeEntrar) {
+      setState(() => _error = 'Escribe la clave completa.');
       return;
     }
 
@@ -113,7 +126,7 @@ class _ClaveScreenState extends State<ClaveScreen> {
     return Scaffold(
       appBar: AppBar(
         automaticallyImplyLeading: widget.puedeVolver,
-        title: Text('Clave de invitación',
+        title: Text('Clave de acceso',
             style: GoogleFonts.poppins(fontWeight: FontWeight.bold)),
         backgroundColor: const Color(0xFF1B5E20),
         foregroundColor: Colors.white,
@@ -140,8 +153,8 @@ class _ClaveScreenState extends State<ClaveScreen> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Escribe la clave que te dieron. Sirve tanto la de la liga '
-                  'como la de tu equipo: la app reconoce cuál es.',
+                  'Escribe la clave que te dieron. Sirve la de la liga, la de '
+                  'tu equipo o la de desarrollo: la app reconoce cuál es.',
                   textAlign: TextAlign.center,
                   style: TextStyle(color: Colors.grey.shade700, fontSize: 13),
                 ),
@@ -149,22 +162,19 @@ class _ClaveScreenState extends State<ClaveScreen> {
 
                 TextField(
                   controller: _clave,
-                  textCapitalization: TextCapitalization.characters,
                   textAlign: TextAlign.center,
-                  maxLength: 8,
                   autofocus: true,
+                  // Ni tope de 8, ni filtro, ni paso a mayúscula. El
+                  // alfabeto de las invitaciones no tiene O/0 ni I/1
+                  // (para poder dictarlas en voz alta), pero filtrar por
+                  // él impedía teclear una clave de desarrollo, que es
+                  // una contraseña larga y sí distingue mayúsculas. Los
+                  // códigos de invitación los normaliza el servidor.
                   style: GoogleFonts.robotoMono(
-                    fontSize: 26,
+                    fontSize: 20,
                     fontWeight: FontWeight.bold,
-                    letterSpacing: 6,
+                    letterSpacing: 2,
                   ),
-                  inputFormatters: [
-                    // El alfabeto del código no tiene O/0 ni I/1, para
-                    // poder dictarlo en voz alta sin confusión.
-                    FilteringTextInputFormatter.allow(
-                        RegExp('[A-HJ-NP-Za-hj-np-z2-9]')),
-                    _AMayusculas(),
-                  ],
                   decoration: InputDecoration(
                     hintText: 'ABCD2345',
                     border: const OutlineInputBorder(),
@@ -216,8 +226,10 @@ class _ClaveScreenState extends State<ClaveScreen> {
                 const SizedBox(height: 20),
 
                 FilledButton(
-                  onPressed:
-                      (ocupado || r == null || !r.valida) ? null : _entrar,
+                  // Una clave de desarrollo no se revisa contra el
+                  // servidor, asi que `r` sigue en null: exigir revisión
+                  // dejaba el botón apagado para siempre.
+                  onPressed: (ocupado || !_puedeEntrar) ? null : _entrar,
                   style: FilledButton.styleFrom(
                     backgroundColor: const Color(0xFF1B5E20),
                     padding: const EdgeInsets.symmetric(vertical: 16),
@@ -315,17 +327,4 @@ class _Vista extends StatelessWidget {
       ),
     );
   }
-}
-
-/// El código se guarda siempre en mayúscula, escriba como escriba.
-class _AMayusculas extends TextInputFormatter {
-  @override
-  TextEditingValue formatEditUpdate(
-    TextEditingValue anterior,
-    TextEditingValue nuevo,
-  ) =>
-      TextEditingValue(
-        text: nuevo.text.toUpperCase(),
-        selection: nuevo.selection,
-      );
 }
