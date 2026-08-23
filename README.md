@@ -144,12 +144,28 @@ backend.
 
 ### 3. La cuenta de desarrollo
 
-No se otorga desde la app. Se inserta a mano:
+Se otorga con una **clave de acceso**. La primera se crea desde el SQL
+Editor, porque todavía no hay ningún dev que la autorice:
 
 ```sql
-insert into public.app_admins (user_id, note)
-values ('<uuid del usuario>', 'cuenta de desarrollo');
+select public.crear_clave_dev(
+  'ESCRIBE-AQUI-UNA-CLAVE-LARGA',  -- mínimo 12 caracteres
+  1,                               -- usos: uno y se gasta
+  7,                               -- días de validez
+  'alta inicial'
+);
 ```
+
+Después, en la app, esa clave convierte tu cuenta en dev.
+
+**Qué significa tener esa clave:** poder total sobre la plataforma —
+ver y editar todas las ligas, todos los equipos y todos los chats, y
+borrar ligas enteras. Un código filtrado es una cuenta de dev regalada.
+Por eso viene con usos contados, vencimiento y se puede revocar
+(`revocar_clave_dev`), y cada canje queda registrado con quién lo usó.
+
+Para devolver el acceso: `renunciar_a_dev()`. Para quitárselo a otro:
+`quitar_dev(user_id)`, con el panel abierto.
 
 El dev no pertenece a ningún equipo ni grupo, no figura en ningún
 listado ni contador, y no deja rastro en las columnas que otros pueden
@@ -168,7 +184,7 @@ lib/
   screens/       pantallas
   widgets/       componentes reutilizables
 supabase/
-  migrations/    37 migraciones, en orden
+  migrations/    39 migraciones, en orden
   seed.sql       club de ejemplo
   schema_completo.sql  las migraciones concatenadas (generado)
 docs/            plan, auditoría, diseño de retos y chat, evidencia académica
