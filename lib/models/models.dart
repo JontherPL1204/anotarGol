@@ -2,9 +2,12 @@
 library;
 
 export 'enums.dart';
+export 'equipo_del_grupo.dart';
 export 'football_match.dart';
 export 'gol_historial.dart';
 export 'goleador.dart';
+export 'grupo.dart';
+export 'invitacion.dart';
 export 'match_event.dart';
 export 'player.dart';
 export 'player_stats.dart';

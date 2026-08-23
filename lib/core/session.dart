@@ -23,16 +23,20 @@ class Session extends ChangeNotifier {
     String? teamId,
     this.auth = const AuthRepository(),
     this.teams = const TeamsRepository(),
+    this.groups = const GroupsRepository(),
   }) : teamId = teamId ?? AppEnv.defaultTeamId;
 
   final String teamId;
   final AuthRepository auth;
   final TeamsRepository teams;
+  final GroupsRepository groups;
 
   StreamSubscription<AuthState>? _suscripcion;
   User? _usuario;
   TeamRole? _rol;
   bool _ocupado = false;
+  List<Grupo> _grupos = const [];
+  Grupo? _grupoActual;
 
   /// `false` si la app corre sin backend. Todo lo demas se apaga solo.
   bool get hayBackend => SupabaseService.isReady;
@@ -51,6 +55,80 @@ class Session extends ChangeNotifier {
   /// Puede editar la plantilla (nombres, dorsales, posiciones) y los
   /// equipos rivales. Cualquier integrante del club, no solo el staff.
   bool get puedeEditarPlantilla => _rol?.canEditSquad ?? false;
+
+  // -------------------------------------------------------------------
+  // Grupos
+  // -------------------------------------------------------------------
+
+  /// Los grupos a los que pertenece. Alimenta el selector del perfil.
+  List<Grupo> get grupos => _grupos;
+
+  /// El grupo sobre el que se esta trabajando ahora.
+  Grupo? get grupoActual => _grupoActual;
+
+  /// La puerta de entrada de la app: una cuenta sin grupo no ve nada, y
+  /// lo primero que se le pide es una clave de invitacion.
+  bool get necesitaGrupo => haySesion && _grupos.isEmpty;
+
+  /// Solo tiene sentido ofrecer el selector si hay mas de uno.
+  bool get puedeCambiarDeGrupo => _grupos.length > 1;
+
+  Future<void> cargarGrupos() async {
+    if (!hayBackend || !haySesion) {
+      _grupos = const [];
+      _grupoActual = null;
+      notifyListeners();
+      return;
+    }
+
+    try {
+      _grupos = await groups.misGrupos();
+    } catch (_) {
+      _grupos = const [];
+    }
+
+    // Si el grupo elegido ya no esta (te sacaron, o te saliste), se cae
+    // al primero disponible en vez de quedar apuntando a la nada.
+    final vigente = _grupoActual == null
+        ? null
+        : _grupos.where((g) => g.id == _grupoActual!.id).firstOrNull;
+    _grupoActual = vigente ?? (_grupos.isEmpty ? null : _grupos.first);
+
+    notifyListeners();
+  }
+
+  void cambiarGrupo(String grupoId) {
+    final elegido = _grupos.where((g) => g.id == grupoId).firstOrNull;
+    if (elegido == null || elegido.id == _grupoActual?.id) return;
+    _grupoActual = elegido;
+    notifyListeners();
+  }
+
+  /// Canjea una clave de invitacion y deja ese grupo como el actual.
+  Future<String?> unirseConCodigo(String codigo) async {
+    if (codigo.trim().length < 4) {
+      return 'Esa clave es muy corta. Son 8 caracteres.';
+    }
+
+    return _intentar(() async {
+      final grupo = await groups.unirseConCodigo(codigo);
+      await cargarGrupos();
+      cambiarGrupo(grupo.id);
+    });
+  }
+
+  Future<String?> crearGrupo({
+    required String nombre,
+    String? descripcion,
+  }) =>
+      _intentar(() async {
+        final grupo = await groups.crearGrupo(
+          nombre: nombre,
+          descripcion: descripcion,
+        );
+        await cargarGrupos();
+        cambiarGrupo(grupo.id);
+      });
 
   String get nombre {
     final meta = _usuario?.userMetadata?['display_name'];
@@ -89,6 +167,7 @@ class Session extends ChangeNotifier {
     } catch (_) {
       _rol = null;
     }
+    await cargarGrupos();
     notifyListeners();
   }
 
@@ -118,6 +197,8 @@ class Session extends ChangeNotifier {
     }
     _usuario = null;
     _rol = null;
+    _grupos = const [];
+    _grupoActual = null;
     notifyListeners();
   }
 
@@ -166,6 +247,20 @@ class Session extends ChangeNotifier {
     }
     if (m.contains('email not confirmed')) {
       return 'Tienes que confirmar el correo antes de entrar.';
+    }
+    if (m.contains('clave de invitación no existe')
+        || m.contains('clave de invitacion no existe')) {
+      return 'Esa clave de invitación no existe. Revísala con quien te invitó.';
+    }
+    if (m.contains('desactivada')) return 'Esa invitación fue desactivada.';
+    if (m.contains('venció') || m.contains('vencio')) {
+      return 'Esa invitación ya venció. Pide una nueva.';
+    }
+    if (m.contains('máximo de veces') || m.contains('maximo de veces')) {
+      return 'Esa invitación ya se usó el máximo de veces.';
+    }
+    if (m.contains('no perteneces a ese grupo')) {
+      return 'No perteneces a ese grupo.';
     }
     if (m.contains('ya tiene un owner')) {
       return 'Este club ya tiene dueño. Pídele que te invite.';

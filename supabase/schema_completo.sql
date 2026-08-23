@@ -19,6 +19,13 @@
 --   20260823160000_10_fix_ultimo_owner.sql
 --   20260823170000_11_grupos_e_invitaciones.sql
 --   20260823180000_12_equipos_dentro_del_grupo.sql
+--   20260823190000_13_cuenta_dev.sql
+--   20260823200000_14_panel_dev_solo_dev.sql
+--   20260823210000_15_el_capitan_crea_su_equipo.sql
+--   20260823220000_16_claves_de_capitan.sql
+--   20260823230000_17_solicitar_fundar_equipo.sql
+--   20260824000000_18_clave_de_equipo.sql
+--   20260824010000_19_fix_solicitudes_y_perfiles.sql
 -- =====================================================================
 
 -- #####################################################################
@@ -3354,4 +3361,1407 @@ comment on view public.tabla_del_grupo is
   'Posiciones de la liga. Ordenar por puntos desc, diferencia desc, goles_a_favor desc.';
 
 grant select on public.tabla_del_grupo to authenticated;
+
+
+-- #####################################################################
+-- # 20260823190000_13_cuenta_dev.sql
+-- #####################################################################
+
+-- =====================================================================
+-- Anotar Gol - 13 | Cuenta de desarrollador (superadministrador)
+-- =====================================================================
+-- Requisito del 23/08/2026:
+--
+--   Existe una cuenta de dev que puede ver y editar TODOS los grupos y
+--   equipos, y que es la UNICA que puede crear un grupo nuevo. El resto
+--   de la gente solo entra con clave de invitacion.
+--
+-- Como se concede:
+--   No hay forma de volverse dev desde la app. Se inserta a mano en la
+--   base, que es justo lo que se espera de un superadministrador:
+--
+--     insert into public.app_admins (user_id, note)
+--     values ('<uuid del usuario>', 'cuenta de desarrollo');
+--
+--   Para saber el uuid: select id, email from auth.users where email = '...';
+--
+-- Por que se hace con una tabla y no con una columna en `profiles`:
+--   `profiles` lo puede actualizar su dueño (politica profiles_update_self).
+--   Una bandera ahi seria auto-otorgable. Esta tabla, en cambio, solo la
+--   escribe alguien que ya es dev, o el equipo desde el panel de Supabase.
+-- =====================================================================
+
+create table if not exists public.app_admins (
+  user_id    uuid primary key references auth.users (id) on delete cascade,
+  note       text,
+  created_at timestamptz not null default now()
+);
+
+comment on table public.app_admins is
+  'Cuentas con poder sobre toda la plataforma. Se otorga solo desde la base.';
+
+alter table public.app_admins enable row level security;
+
+create or replace function public.es_dev()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select exists (
+    select 1 from public.app_admins a where a.user_id = auth.uid()
+  );
+$$;
+
+grant execute on function public.es_dev() to authenticated;
+
+-- Solo un dev ve y toca la lista de devs.
+drop policy if exists app_admins_select on public.app_admins;
+create policy app_admins_select on public.app_admins
+  for select to authenticated using (public.es_dev());
+
+drop policy if exists app_admins_write on public.app_admins;
+create policy app_admins_write on public.app_admins
+  for all to authenticated
+  using (public.es_dev())
+  with check (public.es_dev());
+
+-- ---------------------------------------------------------------------
+-- El poder del dev se inyecta en las funciones de permisos
+-- ---------------------------------------------------------------------
+-- Se toca aqui y no politica por politica: estas funciones son el unico
+-- punto por el que pasa todo el modelo de acceso, asi que una linea en
+-- cada una cubre las 60 y pico politicas sin repetir la condicion.
+
+create or replace function public.es_miembro_del_grupo(p_group_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select public.es_dev() or exists (
+    select 1 from public.group_members gm
+    where gm.group_id = p_group_id and gm.user_id = auth.uid()
+  );
+$$;
+
+create or replace function public.es_admin_del_grupo(p_group_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select public.es_dev() or exists (
+    select 1 from public.group_members gm
+    where gm.group_id = p_group_id
+      and gm.user_id = auth.uid()
+      and gm.role = 'group_admin'
+  );
+$$;
+
+create or replace function public.can_view_team(p_team_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select public.es_dev() or exists (
+    select 1
+    from public.teams t
+    where t.id = p_team_id
+      and (
+        public.is_team_member(t.id)
+        or (t.group_id is not null and public.es_miembro_del_grupo(t.group_id))
+        or (t.group_id is null and t.is_public)
+      )
+  );
+$$;
+
+create or replace function public.can_edit_team(p_team_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select public.es_dev()
+      or coalesce(public.team_role_of(p_team_id) in ('owner', 'admin', 'coach'), false);
+$$;
+
+create or replace function public.can_admin_team(p_team_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select public.es_dev()
+      or coalesce(public.team_role_of(p_team_id) in ('owner', 'admin'), false);
+$$;
+
+create or replace function public.can_edit_squad(p_team_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select public.es_dev()
+      or coalesce(
+           public.team_role_of(p_team_id) in ('owner', 'admin', 'coach', 'player'),
+           false);
+$$;
+
+create or replace function public.can_captain(p_team_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select public.es_dev() or exists (
+    select 1
+    from public.team_members tm
+    where tm.team_id = p_team_id
+      and tm.user_id = auth.uid()
+      and (tm.is_captain or tm.role in ('owner', 'admin'))
+  );
+$$;
+
+-- ---------------------------------------------------------------------
+-- Politicas que consultan la membresia directamente
+-- ---------------------------------------------------------------------
+-- `is_team_member` se deja literal a proposito ("soy miembro de verdad"),
+-- asi que las politicas que la usan sin pasar por las funciones de
+-- arriba necesitan su propia mencion al dev.
+
+drop policy if exists teams_select on public.teams;
+create policy teams_select on public.teams
+  for select to anon, authenticated
+  using (
+    public.es_dev()
+    or public.is_team_member(id)
+    or (group_id is not null
+        and is_discoverable
+        and public.es_miembro_del_grupo(group_id))
+    or (group_id is null and is_public)
+  );
+
+drop policy if exists team_members_select on public.team_members;
+create policy team_members_select on public.team_members
+  for select to authenticated
+  using (public.es_dev() or public.is_team_member(team_id));
+
+drop policy if exists challenges_select on public.challenges;
+create policy challenges_select on public.challenges
+  for select to authenticated
+  using (
+    public.es_dev()
+    or public.is_team_member(from_team_id)
+    or public.is_team_member(to_team_id)
+  );
+
+-- El chat interno se abre al dev SOLO para moderar. Las dos tiendas
+-- exigen poder atender denuncias de contenido en apps con chat; sin un
+-- camino para revisarlo, esa exigencia no se puede cumplir.
+drop policy if exists team_messages_select on public.team_messages;
+create policy team_messages_select on public.team_messages
+  for select to authenticated
+  using (public.es_dev() or public.is_team_member(team_id));
+
+drop policy if exists team_messages_delete on public.team_messages;
+create policy team_messages_delete on public.team_messages
+  for delete to authenticated
+  using (public.es_dev() or user_id = auth.uid() or public.can_admin_team(team_id));
+
+-- ---------------------------------------------------------------------
+-- Crear grupos queda reservado al dev
+-- ---------------------------------------------------------------------
+create or replace function public.crear_grupo(
+  p_nombre      text,
+  p_descripcion text default null
+)
+returns public.groups
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_grupo public.groups;
+  v_base  text;
+  v_slug  text;
+  v_n     int := 0;
+begin
+  if auth.uid() is null then
+    raise exception 'Debes iniciar sesión' using errcode = '42501';
+  end if;
+
+  if not public.es_dev() then
+    raise exception 'Solo la cuenta de desarrollo puede crear grupos'
+      using errcode = '42501',
+            hint = 'Pide una clave de invitación a quien administra el grupo.';
+  end if;
+
+  v_base := coalesce(nullif(public.slugify(p_nombre), ''), 'grupo');
+  v_slug := v_base;
+  while exists (select 1 from public.groups g where g.slug = v_slug) loop
+    v_n := v_n + 1;
+    v_slug := v_base || '-' || v_n;
+  end loop;
+
+  insert into public.groups (name, slug, description, created_by)
+  values (btrim(p_nombre), v_slug, p_descripcion, auth.uid())
+  returning * into v_grupo;
+
+  insert into public.group_members (group_id, user_id, role)
+  values (v_grupo.id, auth.uid(), 'group_admin');
+
+  insert into public.group_invites (group_id, code, created_by)
+  values (v_grupo.id, public.generar_codigo_invitacion(), auth.uid());
+
+  return v_grupo;
+end;
+$$;
+
+-- Nadie inserta grupos por la puerta de atras saltandose el RPC.
+drop policy if exists groups_insert on public.groups;
+create policy groups_insert on public.groups
+  for insert to authenticated
+  with check (public.es_dev());
+
+grant execute on function public.crear_grupo(text, text) to authenticated;
+
+-- ---------------------------------------------------------------------
+-- Panel del dev
+-- ---------------------------------------------------------------------
+-- Todos los grupos con su tamaño, para la pantalla de administracion.
+-- La vista es security_invoker: a quien no sea dev le devuelve vacio,
+-- porque groups_select ya lo filtra.
+drop view if exists public.panel_dev_grupos;
+create view public.panel_dev_grupos
+with (security_invoker = true)
+as
+select
+  g.id,
+  g.name,
+  g.slug,
+  g.description,
+  g.created_at,
+  (select count(*) from public.teams t where t.group_id = g.id)          as equipos,
+  (select count(*) from public.group_members gm where gm.group_id = g.id) as miembros,
+  (select count(*) from public.group_invites gi
+     where gi.group_id = g.id and gi.is_active)                          as invitaciones_activas,
+  (select count(*) from public.matches m
+     join public.teams t2 on t2.id = m.team_id
+    where t2.group_id = g.id)                                            as partidos
+from public.groups g;
+
+grant select on public.panel_dev_grupos to authenticated;
+
+comment on view public.panel_dev_grupos is
+  'Resumen de todos los grupos. Solo devuelve filas a la cuenta de desarrollo.';
+
+
+-- #####################################################################
+-- # 20260823200000_14_panel_dev_solo_dev.sql
+-- #####################################################################
+
+-- =====================================================================
+-- Anotar Gol - 14 | El panel del dev es solo del dev
+-- =====================================================================
+-- Al probar la migracion 13 aparecio esto:
+--
+--   filas del panel para un usuario normal: 1
+--
+-- La vista `panel_dev_grupos` es security_invoker, asi que heredaba la
+-- politica `groups_select`: un miembro del grupo ve su propia fila. No
+-- es una fuga entre grupos, pero expone a cualquier integrante el conteo
+-- de miembros y de invitaciones activas de su liga, que es informacion
+-- de administracion.
+--
+-- Se agrega el filtro explicito: si no eres dev, la vista esta vacia.
+-- =====================================================================
+
+drop view if exists public.panel_dev_grupos;
+create view public.panel_dev_grupos
+with (security_invoker = true)
+as
+select
+  g.id,
+  g.name,
+  g.slug,
+  g.description,
+  g.created_at,
+  (select count(*) from public.teams t where t.group_id = g.id)          as equipos,
+  (select count(*) from public.group_members gm where gm.group_id = g.id) as miembros,
+  (select count(*) from public.group_invites gi
+     where gi.group_id = g.id and gi.is_active)                          as invitaciones_activas,
+  (select count(*) from public.matches m
+     join public.teams t2 on t2.id = m.team_id
+    where t2.group_id = g.id)                                            as partidos
+from public.groups g
+where public.es_dev();
+
+grant select on public.panel_dev_grupos to authenticated;
+
+comment on view public.panel_dev_grupos is
+  'Resumen de todos los grupos. Vacía para quien no sea la cuenta de desarrollo.';
+
+
+-- #####################################################################
+-- # 20260823210000_15_el_capitan_crea_su_equipo.sql
+-- #####################################################################
+
+-- =====================================================================
+-- Anotar Gol - 15 | Quien crea el equipo queda de capitán
+-- =====================================================================
+-- Pregunta de diseño: ¿cómo hace el capitán para crear su equipo?
+--
+-- El nudo es que un capitán lo es DE un equipo, y el equipo todavía no
+-- existe. Así que el orden real es al revés: alguien entra al grupo con
+-- la clave, crea su equipo, y por crearlo queda como dueño y capitán.
+--
+-- Hueco que se arregla aquí:
+--   `handle_new_team` dejaba al creador como `owner`, pero nunca marcaba
+--   `is_captain`. Resultado: un equipo recién creado no tenía capitán, y
+--   sin capitán no se puede retar ni ser retado. En las pruebas hubo que
+--   ponerlo a mano; esa era la señal.
+--
+-- Y un límite, para que la puerta abierta no se convierta en un problema:
+--   quien entra con una clave puede crear UN equipo en ese grupo. El
+--   administrador del grupo puede subir ese número si hace falta.
+-- =====================================================================
+
+-- ---------------------------------------------------------------------
+-- 1. Cuántos equipos puede crear cada persona en un grupo
+-- ---------------------------------------------------------------------
+alter table public.groups
+  add column if not exists max_equipos_por_miembro smallint not null default 1;
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'groups_max_equipos_chk') then
+    alter table public.groups add constraint groups_max_equipos_chk
+      check (max_equipos_por_miembro between 1 and 20);
+  end if;
+end
+$$;
+
+comment on column public.groups.max_equipos_por_miembro is
+  'Equipos que puede fundar cada miembro en este grupo. Evita que una clave filtrada llene la liga.';
+
+-- ---------------------------------------------------------------------
+-- 2. El fundador queda de capitán
+-- ---------------------------------------------------------------------
+create or replace function public.handle_new_team()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if new.created_by is not null then
+    -- Dueño y capitán: es quien lo fundó y, hasta que diga otra cosa,
+    -- quien va a coordinar los partidos.
+    insert into public.team_members (team_id, user_id, role, is_captain)
+    values (new.id, new.created_by, 'owner', true)
+    on conflict (team_id, user_id) do update
+      set role = 'owner', is_captain = true;
+  end if;
+
+  insert into public.team_settings (team_id)
+  values (new.id)
+  on conflict (team_id) do nothing;
+
+  return new;
+end;
+$$;
+
+-- ---------------------------------------------------------------------
+-- 3. Pasar la cinta de capitán
+-- ---------------------------------------------------------------------
+-- Hay un índice único de un capitán por equipo, así que quitar al
+-- anterior y poner al nuevo tiene que ocurrir en un solo paso.
+create or replace function public.nombrar_capitan(
+  p_team_id uuid,
+  p_user_id uuid
+)
+returns public.team_members
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_miembro public.team_members;
+begin
+  -- Lo decide el capitán actual o la dirección del club.
+  if not (public.can_captain(p_team_id) or public.can_admin_team(p_team_id)) then
+    raise exception 'Solo el capitán o un administrador del club pueden pasar la cinta'
+      using errcode = '42501';
+  end if;
+
+  if not exists (
+    select 1 from public.team_members
+    where team_id = p_team_id and user_id = p_user_id
+  ) then
+    raise exception 'Esa persona no pertenece al equipo' using errcode = 'P0002';
+  end if;
+
+  update public.team_members
+  set is_captain = false
+  where team_id = p_team_id and is_captain and user_id <> p_user_id;
+
+  update public.team_members
+  set is_captain = true
+  where team_id = p_team_id and user_id = p_user_id
+  returning * into v_miembro;
+
+  return v_miembro;
+end;
+$$;
+
+grant execute on function public.nombrar_capitan(uuid, uuid) to authenticated;
+
+-- ---------------------------------------------------------------------
+-- 4. create_team respeta el límite del grupo
+-- ---------------------------------------------------------------------
+create or replace function public.create_team(
+  p_name            text,
+  p_short_name      text default null,
+  p_primary_color   text default '#1B5E20',
+  p_secondary_color text default '#FFD700',
+  p_is_public       boolean default false,
+  p_group_id        uuid default null
+)
+returns public.teams
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_team      public.teams;
+  v_base_slug text;
+  v_slug      text;
+  v_suffix    int := 0;
+  v_max       smallint;
+  v_tiene     int;
+begin
+  if auth.uid() is null then
+    raise exception 'Debes iniciar sesión para crear un equipo'
+      using errcode = '42501';
+  end if;
+
+  if p_group_id is not null then
+    if not public.es_miembro_del_grupo(p_group_id) then
+      raise exception 'No perteneces a ese grupo'
+        using errcode = '42501',
+              hint = 'Únete al grupo con su clave de invitación antes de crear el equipo.';
+    end if;
+
+    -- El dev y el administrador del grupo no tienen tope: son quienes
+    -- ordenan la liga.
+    if not (public.es_dev() or public.es_admin_del_grupo(p_group_id)) then
+      select max_equipos_por_miembro into v_max
+      from public.groups where id = p_group_id;
+
+      select count(*) into v_tiene
+      from public.teams t
+      join public.team_members tm on tm.team_id = t.id
+      where t.group_id = p_group_id
+        and tm.user_id = auth.uid()
+        and tm.role = 'owner';
+
+      if v_tiene >= coalesce(v_max, 1) then
+        raise exception 'Ya fundaste % equipo(s) en este grupo', v_tiene
+          using errcode = '42501',
+                hint = 'Pídele al administrador del grupo que suba el límite o que cree el equipo por ti.';
+      end if;
+    end if;
+  end if;
+
+  v_base_slug := coalesce(nullif(public.slugify(p_name), ''), 'equipo');
+  v_slug := v_base_slug;
+
+  while exists (select 1 from public.teams t where t.slug = v_slug) loop
+    v_suffix := v_suffix + 1;
+    v_slug := v_base_slug || '-' || v_suffix;
+  end loop;
+
+  insert into public.teams (
+    name, short_name, slug, primary_color, secondary_color,
+    is_public, group_id, created_by
+  )
+  values (
+    btrim(p_name), nullif(btrim(coalesce(p_short_name, '')), ''), v_slug,
+    p_primary_color, p_secondary_color, p_is_public, p_group_id, auth.uid()
+  )
+  returning * into v_team;
+
+  return v_team;
+end;
+$$;
+
+grant execute on function public.create_team(text, text, text, text, boolean, uuid)
+  to authenticated;
+
+-- ---------------------------------------------------------------------
+-- 5. ¿Puedo fundar un equipo en este grupo?
+-- ---------------------------------------------------------------------
+-- Para que la app muestre u oculte el botón en vez de dejar que el
+-- usuario descubra el límite chocándose con un error.
+create or replace function public.puedo_crear_equipo(p_group_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select
+    public.es_miembro_del_grupo(p_group_id)
+    and (
+      public.es_dev()
+      or public.es_admin_del_grupo(p_group_id)
+      or (
+        select count(*)
+        from public.teams t
+        join public.team_members tm on tm.team_id = t.id
+        where t.group_id = p_group_id
+          and tm.user_id = auth.uid()
+          and tm.role = 'owner'
+      ) < coalesce(
+        (select max_equipos_por_miembro from public.groups where id = p_group_id),
+        1)
+    );
+$$;
+
+grant execute on function public.puedo_crear_equipo(uuid) to authenticated;
+
+
+-- #####################################################################
+-- # 20260823220000_16_claves_de_capitan.sql
+-- #####################################################################
+
+-- =====================================================================
+-- Anotar Gol - 16 | Dos tipos de clave: capitán y jugador
+-- =====================================================================
+-- La idea que cierra el diseño: la clave de invitación no solo abre la
+-- puerta del grupo, además dice a qué vienes.
+--
+--   CLAVE DE CAPITÁN  -> entras al grupo Y puedes fundar tu equipo.
+--                        Quedas como dueño y capitán de ese equipo.
+--   CLAVE DE JUGADOR  -> entras al grupo pero no fundas nada. Te sumas
+--                        a un equipo que ya existe.
+--
+-- Encaja con el resto: el dev crea el grupo, reparte unas pocas claves
+-- de capitán (una por club que quiera en la liga) y muchas de jugador.
+-- Nadie entra sin código, y el código ya trae el permiso puesto. No hace
+-- falta un paso extra de "ahora nómbrame capitán".
+--
+-- El tope por miembro de la migración 15 se conserva como red de
+-- seguridad: aunque una clave de capitán se filtre y la usen diez
+-- personas, cada una funda como máximo lo que permita el grupo.
+-- =====================================================================
+
+-- ---------------------------------------------------------------------
+-- 1. La clave dice para qué es
+-- ---------------------------------------------------------------------
+alter table public.group_invites
+  add column if not exists para_capitan boolean not null default false;
+
+comment on column public.group_invites.para_capitan is
+  'true = quien la canjee podrá fundar su equipo y será su capitán.';
+
+-- El permiso queda escrito en la membresía, no se recalcula desde la
+-- invitación: así revocarlo después es un update y no hay que rastrear
+-- con qué código entró cada quien.
+alter table public.group_members
+  add column if not exists puede_fundar_equipo boolean not null default false;
+
+comment on column public.group_members.puede_fundar_equipo is
+  'Se enciende al entrar con una clave de capitán. El admin puede quitarlo.';
+
+-- ---------------------------------------------------------------------
+-- 2. Crear la clave, diciendo de qué tipo es
+-- ---------------------------------------------------------------------
+create or replace function public.crear_invitacion(
+  p_group_id     uuid,
+  p_max_usos     int     default null,
+  p_dias         int     default null,
+  p_para_capitan boolean default false
+)
+returns public.group_invites
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_inv public.group_invites;
+begin
+  if not public.es_admin_del_grupo(p_group_id) then
+    raise exception 'Solo un administrador del grupo puede crear invitaciones'
+      using errcode = '42501';
+  end if;
+
+  insert into public.group_invites (
+    group_id, code, created_by, max_uses, expires_at, para_capitan
+  )
+  values (
+    p_group_id,
+    public.generar_codigo_invitacion(),
+    auth.uid(),
+    p_max_usos,
+    case when p_dias is null then null else now() + make_interval(days => p_dias) end,
+    coalesce(p_para_capitan, false)
+  )
+  returning * into v_inv;
+
+  return v_inv;
+end;
+$$;
+
+-- La firma vieja de 3 argumentos se retira para que no queden dos
+-- funciones compitiendo por el mismo nombre.
+drop function if exists public.crear_invitacion(uuid, int, int);
+
+grant execute on function public.crear_invitacion(uuid, int, int, boolean)
+  to authenticated;
+
+-- ---------------------------------------------------------------------
+-- 3. Canjear: el código trae el permiso puesto
+-- ---------------------------------------------------------------------
+create or replace function public.unirse_con_codigo(p_codigo text)
+returns public.groups
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_inv   public.group_invites;
+  v_grupo public.groups;
+begin
+  if auth.uid() is null then
+    raise exception 'Debes iniciar sesión' using errcode = '42501';
+  end if;
+
+  select * into v_inv
+  from public.group_invites
+  where upper(btrim(code)) = upper(btrim(p_codigo));
+
+  if v_inv.id is null then
+    raise exception 'Esa clave de invitación no existe' using errcode = 'P0002';
+  end if;
+
+  if not v_inv.is_active then
+    raise exception 'Esa invitación fue desactivada' using errcode = '42501';
+  end if;
+
+  if v_inv.expires_at is not null and v_inv.expires_at < now() then
+    raise exception 'Esa invitación ya venció' using errcode = '42501';
+  end if;
+
+  if v_inv.max_uses is not null and v_inv.uses >= v_inv.max_uses then
+    raise exception 'Esa invitación ya se usó el máximo de veces'
+      using errcode = '42501';
+  end if;
+
+  select * into v_grupo from public.groups where id = v_inv.group_id;
+
+  if exists (
+    select 1 from public.group_members
+    where group_id = v_inv.group_id and user_id = auth.uid()
+  ) then
+    -- Ya estabas dentro. Si esta clave es de capitán, sube el permiso;
+    -- nunca lo baja, para que canjear una clave de jugador no le quite
+    -- la condición de capitán a quien ya la tenía.
+    if v_inv.para_capitan then
+      update public.group_members
+      set puede_fundar_equipo = true
+      where group_id = v_inv.group_id and user_id = auth.uid();
+      update public.group_invites set uses = uses + 1 where id = v_inv.id;
+    end if;
+    return v_grupo;
+  end if;
+
+  insert into public.group_members (group_id, user_id, role, puede_fundar_equipo)
+  values (v_inv.group_id, auth.uid(), 'member', v_inv.para_capitan);
+
+  update public.group_invites set uses = uses + 1 where id = v_inv.id;
+
+  return v_grupo;
+end;
+$$;
+
+grant execute on function public.unirse_con_codigo(text) to authenticated;
+
+-- ---------------------------------------------------------------------
+-- 4. Fundar equipo exige haber entrado con clave de capitán
+-- ---------------------------------------------------------------------
+create or replace function public.puedo_crear_equipo(p_group_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select
+    public.es_dev()
+    or public.es_admin_del_grupo(p_group_id)
+    or (
+      exists (
+        select 1 from public.group_members gm
+        where gm.group_id = p_group_id
+          and gm.user_id = auth.uid()
+          and gm.puede_fundar_equipo
+      )
+      and (
+        select count(*)
+        from public.teams t
+        join public.team_members tm on tm.team_id = t.id
+        where t.group_id = p_group_id
+          and tm.user_id = auth.uid()
+          and tm.role = 'owner'
+      ) < coalesce(
+        (select max_equipos_por_miembro from public.groups where id = p_group_id),
+        1)
+    );
+$$;
+
+grant execute on function public.puedo_crear_equipo(uuid) to authenticated;
+
+create or replace function public.create_team(
+  p_name            text,
+  p_short_name      text default null,
+  p_primary_color   text default '#1B5E20',
+  p_secondary_color text default '#FFD700',
+  p_is_public       boolean default false,
+  p_group_id        uuid default null
+)
+returns public.teams
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_team      public.teams;
+  v_base_slug text;
+  v_slug      text;
+  v_suffix    int := 0;
+begin
+  if auth.uid() is null then
+    raise exception 'Debes iniciar sesión para crear un equipo'
+      using errcode = '42501';
+  end if;
+
+  if p_group_id is not null then
+    if not public.es_miembro_del_grupo(p_group_id) then
+      raise exception 'No perteneces a ese grupo'
+        using errcode = '42501',
+              hint = 'Únete al grupo con su clave de invitación antes de crear el equipo.';
+    end if;
+
+    if not public.puedo_crear_equipo(p_group_id) then
+      raise exception 'Necesitas una clave de capitán para fundar un equipo en este grupo'
+        using errcode = '42501',
+              hint = 'Pídesela a quien administra el grupo. Con una clave de jugador solo puedes sumarte a un equipo que ya exista.';
+    end if;
+  end if;
+
+  v_base_slug := coalesce(nullif(public.slugify(p_name), ''), 'equipo');
+  v_slug := v_base_slug;
+
+  while exists (select 1 from public.teams t where t.slug = v_slug) loop
+    v_suffix := v_suffix + 1;
+    v_slug := v_base_slug || '-' || v_suffix;
+  end loop;
+
+  insert into public.teams (
+    name, short_name, slug, primary_color, secondary_color,
+    is_public, group_id, created_by
+  )
+  values (
+    btrim(p_name), nullif(btrim(coalesce(p_short_name, '')), ''), v_slug,
+    p_primary_color, p_secondary_color, p_is_public, p_group_id, auth.uid()
+  )
+  returning * into v_team;
+
+  return v_team;
+end;
+$$;
+
+grant execute on function public.create_team(text, text, text, text, boolean, uuid)
+  to authenticated;
+
+-- ---------------------------------------------------------------------
+-- 5. El admin puede dar o quitar el permiso a mano
+-- ---------------------------------------------------------------------
+create or replace function public.permitir_fundar_equipo(
+  p_group_id uuid,
+  p_user_id  uuid,
+  p_permitir boolean default true
+)
+returns public.group_members
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_m public.group_members;
+begin
+  if not public.es_admin_del_grupo(p_group_id) then
+    raise exception 'Solo un administrador del grupo puede cambiar esto'
+      using errcode = '42501';
+  end if;
+
+  update public.group_members
+  set puede_fundar_equipo = p_permitir
+  where group_id = p_group_id and user_id = p_user_id
+  returning * into v_m;
+
+  if v_m.user_id is null then
+    raise exception 'Esa persona no pertenece al grupo' using errcode = 'P0002';
+  end if;
+
+  return v_m;
+end;
+$$;
+
+grant execute on function public.permitir_fundar_equipo(uuid, uuid, boolean)
+  to authenticated;
+
+
+-- #####################################################################
+-- # 20260823230000_17_solicitar_fundar_equipo.sql
+-- #####################################################################
+
+-- =====================================================================
+-- Anotar Gol - 17 | Pedirle permiso a la administración para fundar
+-- =====================================================================
+-- Complemento de la clave de capitán: quien entró con clave de jugador
+-- y sí quiere armar su equipo no queda en un callejón sin salida. Pide
+-- permiso desde la app y el administrador del grupo aprueba o rechaza.
+--
+-- Aprobar es exactamente lo mismo que entregarle una clave de capitán:
+-- enciende `group_members.puede_fundar_equipo`.
+-- =====================================================================
+
+do $$
+begin
+  if not exists (select 1 from pg_type where typname = 'estado_solicitud') then
+    create type public.estado_solicitud as enum ('pendiente', 'aprobada', 'rechazada');
+  end if;
+end
+$$;
+
+create table if not exists public.solicitudes_equipo (
+  id           uuid primary key default gen_random_uuid(),
+  group_id     uuid not null references public.groups (id) on delete cascade,
+  user_id      uuid not null references auth.users (id) on delete cascade,
+  mensaje      text check (char_length(mensaje) <= 300),
+  nombre_equipo text check (char_length(btrim(nombre_equipo)) <= 80),
+  estado       public.estado_solicitud not null default 'pendiente',
+  resuelta_por uuid references auth.users (id) on delete set null,
+  resuelta_at  timestamptz,
+  created_at   timestamptz not null default now()
+);
+
+-- Una solicitud pendiente por persona y grupo: no se spamea al admin.
+create unique index if not exists solicitudes_una_pendiente
+  on public.solicitudes_equipo (group_id, user_id) where estado = 'pendiente';
+
+create index if not exists solicitudes_grupo_idx
+  on public.solicitudes_equipo (group_id, estado);
+
+alter table public.solicitudes_equipo enable row level security;
+
+-- Ves las tuyas; el admin ve las de su grupo.
+drop policy if exists solicitudes_select on public.solicitudes_equipo;
+create policy solicitudes_select on public.solicitudes_equipo
+  for select to authenticated
+  using (user_id = auth.uid() or public.es_admin_del_grupo(group_id));
+
+drop policy if exists solicitudes_insert on public.solicitudes_equipo;
+create policy solicitudes_insert on public.solicitudes_equipo
+  for insert to authenticated
+  with check (user_id = auth.uid() and public.es_miembro_del_grupo(group_id));
+
+drop policy if exists solicitudes_update on public.solicitudes_equipo;
+create policy solicitudes_update on public.solicitudes_equipo
+  for update to authenticated
+  using (public.es_admin_del_grupo(group_id))
+  with check (public.es_admin_del_grupo(group_id));
+
+-- Retirar la propia solicitud.
+drop policy if exists solicitudes_delete on public.solicitudes_equipo;
+create policy solicitudes_delete on public.solicitudes_equipo
+  for delete to authenticated
+  using (user_id = auth.uid() and estado = 'pendiente');
+
+create or replace function public.solicitar_fundar_equipo(
+  p_group_id      uuid,
+  p_nombre_equipo text default null,
+  p_mensaje       text default null
+)
+returns public.solicitudes_equipo
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_s public.solicitudes_equipo;
+begin
+  if not public.es_miembro_del_grupo(p_group_id) then
+    raise exception 'No perteneces a ese grupo' using errcode = '42501';
+  end if;
+
+  if public.puedo_crear_equipo(p_group_id) then
+    raise exception 'Ya puedes fundar tu equipo, no hace falta pedir permiso'
+      using errcode = '23514';
+  end if;
+
+  insert into public.solicitudes_equipo (group_id, user_id, nombre_equipo, mensaje)
+  values (p_group_id, auth.uid(), nullif(btrim(coalesce(p_nombre_equipo,'')),''), p_mensaje)
+  on conflict (group_id, user_id) where estado = 'pendiente'
+    do update set mensaje = excluded.mensaje,
+                  nombre_equipo = excluded.nombre_equipo
+  returning * into v_s;
+
+  return v_s;
+end;
+$$;
+
+create or replace function public.responder_solicitud(
+  p_solicitud_id uuid,
+  p_aprobar      boolean
+)
+returns public.solicitudes_equipo
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_s public.solicitudes_equipo;
+begin
+  select * into v_s from public.solicitudes_equipo where id = p_solicitud_id;
+
+  if v_s.id is null then
+    raise exception 'Esa solicitud no existe' using errcode = 'P0002';
+  end if;
+
+  if not public.es_admin_del_grupo(v_s.group_id) then
+    raise exception 'Solo un administrador del grupo puede responder'
+      using errcode = '42501';
+  end if;
+
+  if v_s.estado <> 'pendiente' then
+    raise exception 'Esa solicitud ya fue respondida' using errcode = '23514';
+  end if;
+
+  if p_aprobar then
+    -- Aprobar es entregarle la llave de capitán.
+    update public.group_members
+    set puede_fundar_equipo = true
+    where group_id = v_s.group_id and user_id = v_s.user_id;
+  end if;
+
+  update public.solicitudes_equipo
+  set estado = case when p_aprobar then 'aprobada' else 'rechazada' end,
+      resuelta_por = auth.uid(),
+      resuelta_at = now()
+  where id = p_solicitud_id
+  returning * into v_s;
+
+  return v_s;
+end;
+$$;
+
+grant execute on function public.solicitar_fundar_equipo(uuid, text, text) to authenticated;
+grant execute on function public.responder_solicitud(uuid, boolean)         to authenticated;
+
+-- La bandeja del administrador, con quién pide y qué pide.
+drop view if exists public.solicitudes_del_grupo;
+create view public.solicitudes_del_grupo
+with (security_invoker = true)
+as
+select
+  s.id, s.group_id, s.user_id, s.nombre_equipo, s.mensaje, s.estado,
+  s.created_at, s.resuelta_at,
+  p.display_name as solicitante,
+  p.email        as correo
+from public.solicitudes_equipo s
+left join public.profiles p on p.id = s.user_id;
+
+grant select on public.solicitudes_del_grupo to authenticated;
+
+
+-- #####################################################################
+-- # 20260824000000_18_clave_de_equipo.sql
+-- #####################################################################
+
+-- =====================================================================
+-- Anotar Gol - 18 | La segunda clave: entrar a un equipo
+-- =====================================================================
+-- Hay dos claves, y hacen cosas distintas:
+--
+--   CLAVE DE GRUPO   (login)  -> entras a la liga. Ves sus equipos, su
+--                                cronograma, su tabla. La reparte el
+--                                administrador del grupo.
+--   CLAVE DE EQUIPO  (club)   -> te sumas a un equipo concreto de esa
+--                                liga. La reparte el capitán.
+--
+-- Detalle de usabilidad que se resuelve aquí:
+--   Si te dan la clave del equipo pero nadie te dio la del grupo, no
+--   tiene sentido dejarte fuera: pertenecer a un equipo implica estar en
+--   su liga. Así que canjear una clave de equipo también te mete en el
+--   grupo, como miembro simple y SIN permiso para fundar equipos. La
+--   clave es la autorización; pedir dos códigos para un solo acto sería
+--   fricción sin ganancia de seguridad.
+-- =====================================================================
+
+-- ---------------------------------------------------------------------
+-- 1. Generador de códigos compartido
+-- ---------------------------------------------------------------------
+-- Antes solo miraba `group_invites`. Con dos tablas de códigos hay que
+-- comprobar las dos, o un día una clave de equipo chocaría con una de
+-- grupo y el canje elegiría la equivocada.
+create or replace function public.generar_codigo_invitacion()
+returns text
+language plpgsql
+volatile
+set search_path = public, pg_temp
+as $$
+declare
+  v_alfabeto text := 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  v_codigo   text;
+  v_intento  int := 0;
+begin
+  loop
+    v_codigo := '';
+    for i in 1..8 loop
+      v_codigo := v_codigo ||
+        substr(v_alfabeto, 1 + floor(random() * length(v_alfabeto))::int, 1);
+    end loop;
+
+    exit when not exists (select 1 from public.group_invites gi where gi.code = v_codigo)
+          and not exists (select 1 from public.team_invites ti where ti.code = v_codigo);
+
+    v_intento := v_intento + 1;
+    if v_intento > 50 then
+      raise exception 'No se pudo generar un código libre';
+    end if;
+  end loop;
+
+  return v_codigo;
+end;
+$$;
+
+-- ---------------------------------------------------------------------
+-- 2. Claves de equipo
+-- ---------------------------------------------------------------------
+create table if not exists public.team_invites (
+  id         uuid primary key default gen_random_uuid(),
+  team_id    uuid not null references public.teams (id) on delete cascade,
+  code       text not null unique,
+  -- Con qué rol entra quien la canjee. Por defecto jugador: los roles de
+  -- mando no se reparten por código.
+  rol        public.team_role not null default 'player',
+  created_by uuid references auth.users (id) on delete set null,
+  max_uses   int,
+  uses       int not null default 0,
+  expires_at timestamptz,
+  is_active  boolean not null default true,
+  created_at timestamptz not null default now(),
+  constraint team_invites_rol_chk check (rol in ('player', 'coach', 'viewer'))
+);
+
+create index if not exists team_invites_team_idx on public.team_invites (team_id);
+
+comment on table public.team_invites is
+  'Claves que reparte el capitán para que su gente se sume al equipo.';
+
+alter table public.team_invites enable row level security;
+
+-- Las ve y las crea quien manda en el club.
+drop policy if exists team_invites_select on public.team_invites;
+create policy team_invites_select on public.team_invites
+  for select to authenticated
+  using (public.can_captain(team_id) or public.can_admin_team(team_id));
+
+drop policy if exists team_invites_write on public.team_invites;
+create policy team_invites_write on public.team_invites
+  for all to authenticated
+  using (public.can_captain(team_id) or public.can_admin_team(team_id))
+  with check (public.can_captain(team_id) or public.can_admin_team(team_id));
+
+-- ---------------------------------------------------------------------
+-- 3. Crear la clave del equipo
+-- ---------------------------------------------------------------------
+create or replace function public.crear_invitacion_equipo(
+  p_team_id  uuid,
+  p_rol      public.team_role default 'player',
+  p_max_usos int default null,
+  p_dias     int default null
+)
+returns public.team_invites
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_inv public.team_invites;
+begin
+  if not (public.can_captain(p_team_id) or public.can_admin_team(p_team_id)) then
+    raise exception 'Solo el capitán o un administrador del club pueden crear claves'
+      using errcode = '42501';
+  end if;
+
+  if p_rol not in ('player', 'coach', 'viewer') then
+    raise exception 'Por código solo se entra como jugador, cuerpo técnico o hincha'
+      using errcode = '23514',
+            hint = 'Los roles de mando se otorgan a mano desde la gestión del club.';
+  end if;
+
+  insert into public.team_invites (
+    team_id, code, rol, created_by, max_uses, expires_at
+  )
+  values (
+    p_team_id,
+    public.generar_codigo_invitacion(),
+    p_rol,
+    auth.uid(),
+    p_max_usos,
+    case when p_dias is null then null else now() + make_interval(days => p_dias) end
+  )
+  returning * into v_inv;
+
+  return v_inv;
+end;
+$$;
+
+-- ---------------------------------------------------------------------
+-- 4. Canjear la clave del equipo
+-- ---------------------------------------------------------------------
+create or replace function public.unirse_a_equipo_con_codigo(p_codigo text)
+returns public.teams
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_inv    public.team_invites;
+  v_equipo public.teams;
+begin
+  if auth.uid() is null then
+    raise exception 'Debes iniciar sesión' using errcode = '42501';
+  end if;
+
+  select * into v_inv
+  from public.team_invites
+  where upper(btrim(code)) = upper(btrim(p_codigo));
+
+  if v_inv.id is null then
+    raise exception 'Esa clave de equipo no existe' using errcode = 'P0002';
+  end if;
+
+  if not v_inv.is_active then
+    raise exception 'Esa clave fue desactivada' using errcode = '42501';
+  end if;
+
+  if v_inv.expires_at is not null and v_inv.expires_at < now() then
+    raise exception 'Esa clave ya venció' using errcode = '42501';
+  end if;
+
+  if v_inv.max_uses is not null and v_inv.uses >= v_inv.max_uses then
+    raise exception 'Esa clave ya se usó el máximo de veces' using errcode = '42501';
+  end if;
+
+  select * into v_equipo from public.teams where id = v_inv.team_id;
+
+  -- Pertenecer al equipo implica estar en su liga: si falta, se entra
+  -- como miembro simple, sin permiso para fundar equipos.
+  if v_equipo.group_id is not null
+     and not exists (
+       select 1 from public.group_members
+       where group_id = v_equipo.group_id and user_id = auth.uid()
+     ) then
+    insert into public.group_members (group_id, user_id, role, puede_fundar_equipo)
+    values (v_equipo.group_id, auth.uid(), 'member', false);
+  end if;
+
+  -- Ya estabas en el equipo: no se gasta un uso ni se toca tu rol, para
+  -- que un jugador que ya es capitán no se degrade al reusar la clave.
+  if exists (
+    select 1 from public.team_members
+    where team_id = v_inv.team_id and user_id = auth.uid()
+  ) then
+    return v_equipo;
+  end if;
+
+  insert into public.team_members (team_id, user_id, role)
+  values (v_inv.team_id, auth.uid(), v_inv.rol);
+
+  update public.team_invites set uses = uses + 1 where id = v_inv.id;
+
+  return v_equipo;
+end;
+$$;
+
+grant execute on function public.crear_invitacion_equipo(uuid, public.team_role, int, int)
+  to authenticated;
+grant execute on function public.unirse_a_equipo_con_codigo(text) to authenticated;
+
+-- ---------------------------------------------------------------------
+-- 5. Canje único: la app no tiene por qué saber qué tipo de clave es
+-- ---------------------------------------------------------------------
+-- Quien recibe un código por WhatsApp no sabe si es de grupo o de
+-- equipo. Esta función lo averigua y hace lo que corresponda.
+create or replace function public.canjear_clave(p_codigo text)
+returns table (
+  tipo       text,
+  group_id   uuid,
+  group_name text,
+  team_id    uuid,
+  team_name  text
+)
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_codigo text := upper(btrim(p_codigo));
+  v_grupo  public.groups;
+  v_equipo public.teams;
+begin
+  if exists (select 1 from public.group_invites where upper(btrim(code)) = v_codigo) then
+    v_grupo := public.unirse_con_codigo(v_codigo);
+    return query select 'grupo'::text, v_grupo.id, v_grupo.name, null::uuid, null::text;
+    return;
+  end if;
+
+  if exists (select 1 from public.team_invites where upper(btrim(code)) = v_codigo) then
+    v_equipo := public.unirse_a_equipo_con_codigo(v_codigo);
+    select * into v_grupo from public.groups where id = v_equipo.group_id;
+    return query select 'equipo'::text, v_grupo.id, v_grupo.name, v_equipo.id, v_equipo.name;
+    return;
+  end if;
+
+  raise exception 'Esa clave no existe. Revísala con quien te la envió.'
+    using errcode = 'P0002';
+end;
+$$;
+
+grant execute on function public.canjear_clave(text) to authenticated;
+
+comment on function public.canjear_clave is
+  'Canjea una clave sin que el usuario tenga que saber si es de grupo o de equipo.';
+
+
+-- #####################################################################
+-- # 20260824010000_19_fix_solicitudes_y_perfiles.sql
+-- #####################################################################
+
+-- =====================================================================
+-- Anotar Gol - 19 | Dos correcciones de la migración 17
+-- =====================================================================
+-- Ambas aparecieron al probar el flujo completo contra la base.
+--
+-- 1. responder_solicitud fallaba con:
+--      column "estado" is of type estado_solicitud but expression is of
+--      type text
+--    El CASE devolvía texto sin castear al enum. Se arregla con el cast
+--    explícito.
+--
+-- 2. La bandeja del administrador mostraba `solicitante: null`.
+--    La vista es security_invoker y `profiles_select` solo dejaba ver el
+--    perfil propio o el de compañeros de EQUIPO. El administrador de un
+--    grupo no comparte equipo con quien le escribe, así que veía la
+--    solicitud pero no el nombre de quien la manda: inservible para
+--    decidir. Se agrega la visibilidad por GRUPO.
+-- =====================================================================
+
+-- ---------------------------------------------------------------------
+-- 1. El cast que faltaba
+-- ---------------------------------------------------------------------
+create or replace function public.responder_solicitud(
+  p_solicitud_id uuid,
+  p_aprobar      boolean
+)
+returns public.solicitudes_equipo
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_s public.solicitudes_equipo;
+begin
+  select * into v_s from public.solicitudes_equipo where id = p_solicitud_id;
+
+  if v_s.id is null then
+    raise exception 'Esa solicitud no existe' using errcode = 'P0002';
+  end if;
+
+  if not public.es_admin_del_grupo(v_s.group_id) then
+    raise exception 'Solo un administrador del grupo puede responder'
+      using errcode = '42501';
+  end if;
+
+  if v_s.estado <> 'pendiente' then
+    raise exception 'Esa solicitud ya fue respondida' using errcode = '23514';
+  end if;
+
+  if p_aprobar then
+    update public.group_members
+    set puede_fundar_equipo = true
+    where group_id = v_s.group_id and user_id = v_s.user_id;
+  end if;
+
+  update public.solicitudes_equipo
+  set estado = (case when p_aprobar then 'aprobada' else 'rechazada' end)
+                 ::public.estado_solicitud,
+      resuelta_por = auth.uid(),
+      resuelta_at = now()
+  where id = p_solicitud_id
+  returning * into v_s;
+
+  return v_s;
+end;
+$$;
+
+grant execute on function public.responder_solicitud(uuid, boolean) to authenticated;
+
+-- ---------------------------------------------------------------------
+-- 2. Ver el nombre de la gente de tu grupo
+-- ---------------------------------------------------------------------
+create or replace function public.comparte_grupo_conmigo(p_user_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select exists (
+    select 1
+    from public.group_members mio
+    join public.group_members suyo on suyo.group_id = mio.group_id
+    where mio.user_id = auth.uid()
+      and suyo.user_id = p_user_id
+  );
+$$;
+
+grant execute on function public.comparte_grupo_conmigo(uuid) to authenticated;
+
+-- El perfil solo tiene nombre, correo y avatar. Dentro de una liga hace
+-- falta poder ponerle cara a quien juega, capitanea o pide permiso.
+drop policy if exists profiles_select on public.profiles;
+create policy profiles_select on public.profiles
+  for select to authenticated
+  using (
+    id = auth.uid()
+    or public.es_dev()
+    or public.shares_team_with(id)
+    or public.comparte_grupo_conmigo(id)
+  );
 
