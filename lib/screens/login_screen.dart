@@ -96,7 +96,7 @@ class _LoginScreenState extends State<LoginScreen> {
         setState(() => _error = error);
         return;
       }
-      Navigator.of(context).pop();
+      _cerrar();
       return;
     }
 
@@ -136,7 +136,14 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
-    Navigator.of(context).pop();
+    _cerrar();
+  }
+
+  /// Cuando el login es la primera pantalla no hay nada que cerrar: la
+  /// puerta se vuelve a pintar sola al cambiar la sesión.
+  void _cerrar() {
+    final nav = Navigator.of(context);
+    if (nav.canPop()) nav.pop();
   }
 
   @override

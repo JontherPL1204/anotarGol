@@ -12,6 +12,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:diego_javier_lopez_zambrano/core/session.dart';
 import 'package:diego_javier_lopez_zambrano/models/models.dart';
 import 'package:diego_javier_lopez_zambrano/screens/clave_screen.dart';
+import 'package:diego_javier_lopez_zambrano/screens/login_screen.dart';
 import 'package:diego_javier_lopez_zambrano/screens/puerta.dart';
 
 class _SesionFalsa extends Session {
@@ -131,9 +132,15 @@ void main() {
       expect(find.text('Pasión Futbolera FC'), findsOneWidget);
     });
 
-    testWidgets('como invitado tampoco pide clave', (tester) async {
+    testWidgets('con backend y sin sesión, lo primero es el login',
+        (tester) async {
       await _montar(tester, Puerta(session: _SesionFalsa(sesion: false)));
+
+      // Las ligas son privadas: un invitado no ve nada de la app, ni
+      // siquiera la portada del club.
+      expect(find.byType(LoginScreen), findsOneWidget);
       expect(find.byType(ClaveScreen), findsNothing);
+      expect(find.text('Pasión Futbolera FC'), findsNothing);
     });
 
     testWidgets('con sesión y sin liga, la clave es lo único que hay',

@@ -7,15 +7,17 @@ import 'clave_screen.dart';
 import 'dev_panel_screen.dart';
 import 'elegir_liga_screen.dart';
 import 'fundar_equipo_screen.dart';
+import 'login_screen.dart';
 
 /// Decide qué pantalla ve el usuario al abrir la app.
 ///
 /// La regla es la del modelo de privacidad: sin liga no hay nada que
-/// mostrar. Por eso quien inicia sesión y no pertenece a ninguna cae
-/// directo en la casilla de la clave, y no puede saltarla.
+/// mostrar. Por eso lo primero es identificarse, y quien inicia sesión
+/// y no pertenece a ninguna liga cae en la casilla de la clave, sin
+/// poder saltarla.
 ///
 /// Sin backend configurado no hay nada de esto: la app arranca en modo
-/// local con los datos de ejemplo, como siempre.
+/// local con los datos de ejemplo, como la entrega académica.
 class Puerta extends StatelessWidget {
   const Puerta({super.key, required this.session});
 
@@ -26,10 +28,13 @@ class Puerta extends StatelessWidget {
     return ListenableBuilder(
       listenable: session,
       builder: (context, _) {
-        // Modo local o invitado: la app funciona como demo.
-        if (!session.hayBackend || !session.haySesion) {
-          return Homescreen(session: session);
-        }
+        // Sin backend no hay a qué conectarse: queda la demo local con
+        // los datos de ejemplo.
+        if (!session.hayBackend) return Homescreen(session: session);
+
+        // Con backend, la primera pantalla es el login. Las ligas son
+        // privadas: un invitado no tiene nada que mirar aquí.
+        if (!session.haySesion) return LoginScreen(session: session);
 
         // Con sesión pero sin liga: la clave es lo único que hay.
         if (session.situacion.necesitaClave) {
