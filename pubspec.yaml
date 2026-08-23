@@ -34,6 +34,10 @@ dependencies:
   # Las credenciales entran por --dart-define, nunca en el codigo.
   supabase_flutter: ^2.8.0
 
+  # Elegir el escudo del equipo. Es opcional en la app: si el usuario no
+  # pone escudo, nunca se abre el selector.
+  image_picker: ^1.1.2
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

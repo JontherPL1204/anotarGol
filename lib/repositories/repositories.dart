@@ -6,6 +6,7 @@
 library;
 
 export 'auth_repository.dart';
+export 'capitan_repository.dart';
 export 'groups_repository.dart';
 export 'match_events_repository.dart';
 export 'matches_repository.dart';
