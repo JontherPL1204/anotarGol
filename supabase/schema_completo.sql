@@ -12,6 +12,12 @@
 --   20260821120300_03_views.sql
 --   20260821120400_04_rls.sql
 --   20260821120500_05_realtime_storage.sql
+--   20260823120000_06_rivales_y_goleadores.sql
+--   20260823130000_07_retos_y_chat.sql
+--   20260823140000_08_acuerdo_y_borrado_chat.sql
+--   20260823150000_09_fix_permisos_acuerdo.sql
+--   20260823160000_10_fix_ultimo_owner.sql
+--   20260823170000_11_grupos_e_invitaciones.sql
 -- =====================================================================
 
 -- #####################################################################
@@ -1164,4 +1170,1982 @@ exception
     raise notice 'Sin permisos para crear politicas de storage. Crealas desde el panel de Supabase.';
 end
 $$;
+
+
+-- #####################################################################
+-- # 20260823120000_06_rivales_y_goleadores.sql
+-- #####################################################################
+
+-- =====================================================================
+-- Anotar Gol - 06 | Rivales, plantillas imaginarias y goleadores
+-- =====================================================================
+-- Tres cosas:
+--
+--   1. Cualquier integrante del club (no solo el cuerpo tecnico) puede
+--      editar la plantilla: nombres, dorsales y posiciones.
+--   2. El rival deja de ser un texto suelto en `matches.opponent_name` y
+--      pasa a poder tener plantilla propia. Y si no se conocen sus
+--      jugadores, se generan inventados, marcados como tales.
+--   3. Vistas de goleadores e historial de goles.
+-- =====================================================================
+
+-- ---------------------------------------------------------------------
+-- 1. Quien puede tocar la plantilla
+-- ---------------------------------------------------------------------
+-- `can_edit_team` (owner/admin/coach) sigue mandando sobre partidos y
+-- eventos. Para la plantilla se abre a cualquier miembro con rol, porque
+-- el equipo se administra entre todos. El hincha y el anonimo siguen
+-- fuera.
+create or replace function public.can_edit_squad(p_team_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select coalesce(
+    public.team_role_of(p_team_id) in ('owner', 'admin', 'coach', 'player'),
+    false);
+$$;
+
+grant execute on function public.can_edit_squad(uuid) to anon, authenticated;
+
+drop policy if exists players_insert on public.players;
+create policy players_insert on public.players
+  for insert to authenticated
+  with check (public.can_edit_squad(team_id));
+
+drop policy if exists players_update on public.players;
+create policy players_update on public.players
+  for update to authenticated
+  using (public.can_edit_squad(team_id))
+  with check (public.can_edit_squad(team_id));
+
+-- Borrar un jugador arrastra sus eventos: eso sigue siendo del staff.
+drop policy if exists players_delete on public.players;
+create policy players_delete on public.players
+  for delete to authenticated
+  using (public.can_edit_team(team_id));
+
+-- ---------------------------------------------------------------------
+-- 2. Rivales
+-- ---------------------------------------------------------------------
+-- Un rival pertenece al club que lo registra: cada club lleva su propia
+-- libreta de equipos contrarios y no ve la de los demas.
+create table if not exists public.rivals (
+  id         uuid primary key default gen_random_uuid(),
+  team_id    uuid not null references public.teams (id) on delete cascade,
+  name       text not null check (char_length(btrim(name)) between 2 and 80),
+  logo_url   text,
+  notes      text,
+  created_by uuid references auth.users (id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (team_id, name),
+  unique (id, team_id)
+);
+
+create index if not exists rivals_team_idx on public.rivals (team_id);
+
+comment on table public.rivals is
+  'Equipos contrarios registrados por un club. Se reutilizan entre partidos.';
+
+-- Jugadores del rival. Misma forma que `players`, mas la bandera que
+-- distingue lo real de lo inventado.
+create table if not exists public.rival_players (
+  id              uuid primary key default gen_random_uuid(),
+  rival_id        uuid not null,
+  team_id         uuid not null,
+  number          smallint check (number between 1 and 99),
+  full_name       text not null check (char_length(btrim(full_name)) >= 2),
+  position        public.player_position not null default 'MF',
+  position_detail text,
+  -- true = el nombre no es real, se genero por falta de informacion.
+  -- La app SIEMPRE tiene que mostrarlo; si no, son datos falsos
+  -- presentados como ciertos.
+  is_imaginary    boolean not null default false,
+  is_active       boolean not null default true,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now(),
+  unique (id, team_id),
+  foreign key (rival_id, team_id)
+    references public.rivals (id, team_id) on delete cascade
+);
+
+create index if not exists rival_players_rival_idx on public.rival_players (rival_id);
+
+create unique index if not exists rival_players_number_uniq
+  on public.rival_players (rival_id, number) where is_active and number is not null;
+
+comment on column public.rival_players.is_imaginary is
+  'true = jugador inventado por falta de datos del rival. Debe verse en la interfaz.';
+
+-- El partido puede apuntar a un rival con plantilla. `opponent_name` se
+-- conserva: hay partidos contra equipos que nunca se registran.
+alter table public.matches
+  add column if not exists rival_id uuid;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'matches_rival_fk'
+  ) then
+    alter table public.matches
+      add constraint matches_rival_fk
+      foreign key (rival_id, team_id)
+      references public.rivals (id, team_id) on delete set null;
+  end if;
+end
+$$;
+
+-- Un gol del rival ahora puede tener autor.
+alter table public.match_events
+  add column if not exists rival_player_id uuid;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'match_events_rival_player_fk'
+  ) then
+    alter table public.match_events
+      add constraint match_events_rival_player_fk
+      foreign key (rival_player_id, team_id)
+      references public.rival_players (id, team_id) on delete set null;
+  end if;
+
+  -- Un jugador del rival solo puede figurar en un evento del rival.
+  if not exists (
+    select 1 from pg_constraint where conname = 'match_events_rival_side_chk'
+  ) then
+    alter table public.match_events
+      add constraint match_events_rival_side_chk
+      check (side = 'them' or rival_player_id is null);
+  end if;
+end
+$$;
+
+create index if not exists match_events_rival_player_idx
+  on public.match_events (rival_player_id);
+
+-- ---------------------------------------------------------------------
+-- 3. RLS de las tablas nuevas
+-- ---------------------------------------------------------------------
+alter table public.rivals        enable row level security;
+alter table public.rival_players enable row level security;
+
+do $$
+declare
+  t text;
+begin
+  foreach t in array array['rivals', 'rival_players']
+  loop
+    execute format('drop policy if exists %I on public.%I', t || '_select', t);
+    execute format($fmt$
+      create policy %I on public.%I
+        for select to anon, authenticated
+        using (public.can_view_team(team_id))
+    $fmt$, t || '_select', t);
+
+    execute format('drop policy if exists %I on public.%I', t || '_insert', t);
+    execute format($fmt$
+      create policy %I on public.%I
+        for insert to authenticated
+        with check (public.can_edit_squad(team_id))
+    $fmt$, t || '_insert', t);
+
+    execute format('drop policy if exists %I on public.%I', t || '_update', t);
+    execute format($fmt$
+      create policy %I on public.%I
+        for update to authenticated
+        using (public.can_edit_squad(team_id))
+        with check (public.can_edit_squad(team_id))
+    $fmt$, t || '_update', t);
+
+    execute format('drop policy if exists %I on public.%I', t || '_delete', t);
+    execute format($fmt$
+      create policy %I on public.%I
+        for delete to authenticated
+        using (public.can_edit_squad(team_id))
+    $fmt$, t || '_delete', t);
+  end loop;
+end
+$$;
+
+-- ---------------------------------------------------------------------
+-- 4. Generador de plantilla imaginaria
+-- ---------------------------------------------------------------------
+-- El caso de uso: vas a jugar contra un equipo del que no sabes ni los
+-- nombres. En vez de dejar la pantalla vacia, se arma un 4-3-3 con
+-- nombres inventados y TODOS marcados con is_imaginary = true.
+--
+-- SECURITY INVOKER a proposito: es RLS quien decide si puedes escribir
+-- en ese club, no esta funcion.
+create or replace function public.generar_plantilla_imaginaria(
+  p_rival_id uuid,
+  p_cantidad int default 11
+)
+returns setof public.rival_players
+language plpgsql
+set search_path = public, pg_temp
+as $$
+declare
+  v_team_id uuid;
+  v_nombres text[] := array[
+    'Andrés','Bryan','Carlos','Damián','Erick','Fabián','Gabriel','Héctor',
+    'Iván','Jefferson','Kevin','Luis','Marco','Nicolás','Óscar','Patricio',
+    'Ramiro','Santiago','Tomás','Ulises','Vinicio','Washington','Xavier','Yuri'];
+  v_apellidos text[] := array[
+    'Andrade','Bermúdez','Cedeño','Delgado','Espinoza','Franco','Guerrero',
+    'Hurtado','Intriago','Jaramillo','Lucas','Montero','Nazareno','Ortega',
+    'Ponce','Quiñónez','Reasco','Solís','Tenorio','Uribe','Vargas','Zambrano'];
+  v_posiciones public.player_position[] := array[
+    'GK','DF','DF','DF','DF','MF','MF','MF','FW','FW','FW']::public.player_position[];
+  v_detalles text[] := array[
+    'Portero','Lateral Derecho','Defensa Central','Defensa Central','Lateral Izquierdo',
+    'Mediocampista Defensivo','Mediocampista Central','Mediocampista Ofensivo',
+    'Extremo Derecho','Delantero Centro','Extremo Izquierdo'];
+  i int;
+begin
+  select r.team_id into v_team_id from public.rivals r where r.id = p_rival_id;
+
+  if v_team_id is null then
+    raise exception 'El rival no existe' using errcode = 'P0002';
+  end if;
+
+  -- Entre 1 y 11. Pedir 50 jugadores no tiene sentido en una cancha.
+  p_cantidad := least(greatest(coalesce(p_cantidad, 11), 1), 11);
+
+  -- Re-generable: se borran los inventados anteriores, nunca los reales
+  -- que alguien haya cargado a mano.
+  delete from public.rival_players
+  where rival_id = p_rival_id and is_imaginary;
+
+  for i in 1..p_cantidad loop
+    insert into public.rival_players (
+      rival_id, team_id, number, full_name, position, position_detail, is_imaginary
+    )
+    values (
+      p_rival_id,
+      v_team_id,
+      i,
+      v_nombres[1 + floor(random() * array_length(v_nombres, 1))::int] || ' ' ||
+      v_apellidos[1 + floor(random() * array_length(v_apellidos, 1))::int],
+      v_posiciones[i],
+      v_detalles[i],
+      true
+    )
+    on conflict do nothing;
+  end loop;
+
+  return query
+    select * from public.rival_players rp
+    where rp.rival_id = p_rival_id
+    order by rp.number nulls last;
+end;
+$$;
+
+grant execute on function public.generar_plantilla_imaginaria(uuid, int) to authenticated;
+
+-- Crea el rival y, en el mismo paso, le inventa la plantilla. Es el
+-- atajo para "no tengo los datos del otro equipo".
+create or replace function public.crear_rival_con_plantilla(
+  p_team_id  uuid,
+  p_nombre   text,
+  p_inventar boolean default true,
+  p_cantidad int default 11
+)
+returns public.rivals
+language plpgsql
+set search_path = public, pg_temp
+as $$
+declare
+  v_rival public.rivals;
+begin
+  insert into public.rivals (team_id, name, created_by)
+  values (p_team_id, btrim(p_nombre), auth.uid())
+  on conflict (team_id, name) do update set updated_at = now()
+  returning * into v_rival;
+
+  if p_inventar then
+    perform public.generar_plantilla_imaginaria(v_rival.id, p_cantidad);
+  end if;
+
+  return v_rival;
+end;
+$$;
+
+grant execute on function public.crear_rival_con_plantilla(uuid, text, boolean, int)
+  to authenticated;
+
+-- ---------------------------------------------------------------------
+-- 5. Goleadores e historial
+-- ---------------------------------------------------------------------
+-- Ranking de quien mete goles, del club y de los rivales. `bando`
+-- permite a la app mostrar una tabla, la otra, o las dos.
+drop view if exists public.goleadores;
+create view public.goleadores
+with (security_invoker = true)
+as
+select
+  'nuestro'::text        as bando,
+  p.team_id,
+  p.id                   as jugador_id,
+  p.full_name            as nombre,
+  p.number               as dorsal,
+  p.position,
+  false                  as es_imaginario,
+  null::text             as club,
+  count(*)               as goles,
+  min(e.created_at)      as primer_gol,
+  max(e.created_at)      as ultimo_gol
+from public.match_events e
+join public.players p on p.id = e.player_id
+where e.type = 'goal' and not e.is_own_goal
+group by p.team_id, p.id, p.full_name, p.number, p.position
+
+union all
+
+select
+  'rival'::text,
+  rp.team_id,
+  rp.id,
+  rp.full_name,
+  rp.number,
+  rp.position,
+  rp.is_imaginary,
+  r.name,
+  count(*),
+  min(e.created_at),
+  max(e.created_at)
+from public.match_events e
+join public.rival_players rp on rp.id = e.rival_player_id
+join public.rivals r on r.id = rp.rival_id
+where e.type = 'goal' and not e.is_own_goal
+group by rp.team_id, rp.id, rp.full_name, rp.number, rp.position, rp.is_imaginary, r.name;
+
+comment on view public.goleadores is
+  'Ranking de goleadores del club y de los rivales. Ordenar por goles desc.';
+
+-- Historial: un gol por fila, con quien lo metio y en que partido.
+drop view if exists public.historial_goles;
+create view public.historial_goles
+with (security_invoker = true)
+as
+select
+  e.id,
+  e.team_id,
+  e.match_id,
+  e.minute,
+  e.side,
+  e.is_own_goal,
+  e.created_at,
+  coalesce(p.full_name, rp.full_name)     as goleador,
+  coalesce(p.number, rp.number)           as dorsal,
+  coalesce(rp.is_imaginary, false)        as es_imaginario,
+  asis.full_name                          as asistencia,
+  m.opponent_name,
+  m.kickoff_at,
+  m.status,
+  m.is_home
+from public.match_events e
+join public.matches m on m.id = e.match_id
+left join public.players p        on p.id  = e.player_id
+left join public.players asis     on asis.id = e.assist_player_id
+left join public.rival_players rp  on rp.id = e.rival_player_id
+where e.type = 'goal';
+
+comment on view public.historial_goles is
+  'Un gol por fila, con autor, asistencia y partido. Ordenar por created_at desc.';
+
+grant select on public.goleadores       to anon, authenticated;
+grant select on public.historial_goles  to anon, authenticated;
+
+-- ---------------------------------------------------------------------
+-- 6. Tiempo real y updated_at
+-- ---------------------------------------------------------------------
+do $$
+declare
+  t text;
+begin
+  foreach t in array array['rivals', 'rival_players']
+  loop
+    execute format('drop trigger if exists set_updated_at on public.%I', t);
+    execute format(
+      'create trigger set_updated_at before update on public.%I
+       for each row execute function public.set_updated_at()', t);
+  end loop;
+
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime')
+     and not exists (
+       select 1 from pg_publication_tables
+       where pubname = 'supabase_realtime'
+         and schemaname = 'public' and tablename = 'rival_players'
+     ) then
+    alter publication supabase_realtime add table public.rival_players;
+  end if;
+end
+$$;
+
+alter table public.rival_players replica identity full;
+
+
+-- #####################################################################
+-- # 20260823130000_07_retos_y_chat.sql
+-- #####################################################################
+
+-- =====================================================================
+-- Anotar Gol - 07 | Capitanes, retos entre equipos y chat
+-- =====================================================================
+-- Ver docs/RETOS_Y_CHAT.md para el porque de cada decision.
+--
+-- Resumen del modelo de acceso que se establece aqui:
+--
+--   * Los clubes nuevos nacen PRIVADOS. Ser "descubrible" (aparecer en
+--     la busqueda para retarte) no es lo mismo que ser publico.
+--   * El chat interno del equipo es SIEMPRE solo de miembros, incluso si
+--     el club decide ser publico.
+--   * El chat del reto es solo de los dos capitanes, y solo mientras el
+--     reto sigue abierto.
+-- =====================================================================
+
+-- ---------------------------------------------------------------------
+-- 1. Privacidad por defecto
+-- ---------------------------------------------------------------------
+-- Los clubes existentes conservan lo que tengan; cambia el default.
+alter table public.teams alter column is_public set default false;
+
+-- Aparecer en la busqueda de equipos para poder ser retado. No expone
+-- plantilla, partidos ni chat: solo el nombre y los colores.
+alter table public.teams
+  add column if not exists is_discoverable boolean not null default true;
+
+comment on column public.teams.is_discoverable is
+  'Aparece en la busqueda para recibir retos. No abre los datos del club.';
+
+drop policy if exists teams_select on public.teams;
+create policy teams_select on public.teams
+  for select to anon, authenticated
+  using (is_public or is_discoverable or public.is_team_member(id));
+
+-- ---------------------------------------------------------------------
+-- 2. Capitan
+-- ---------------------------------------------------------------------
+-- No es un rol nuevo: es una marca sobre la membresia. El capitan suele
+-- ser ademas jugador, y necesita conservar ese rol.
+alter table public.team_members
+  add column if not exists is_captain boolean not null default false;
+
+create unique index if not exists team_members_un_capitan_por_equipo
+  on public.team_members (team_id) where is_captain;
+
+-- El owner y el admin tambien pueden ejercer de capitan, para que el
+-- equipo no quede bloqueado si el capitan desaparece.
+create or replace function public.can_captain(p_team_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select exists (
+    select 1
+    from public.team_members tm
+    where tm.team_id = p_team_id
+      and tm.user_id = auth.uid()
+      and (tm.is_captain or tm.role in ('owner', 'admin'))
+  );
+$$;
+
+grant execute on function public.can_captain(uuid) to authenticated;
+
+-- ---------------------------------------------------------------------
+-- 3. Terminos del partido
+-- ---------------------------------------------------------------------
+alter table public.matches
+  add column if not exists opponent_team_id      uuid references public.teams (id) on delete set null,
+  add column if not exists duration_minutes      smallint not null default 90,
+  add column if not exists substitutions_allowed smallint not null default 5;
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'matches_duracion_chk') then
+    alter table public.matches add constraint matches_duracion_chk
+      check (duration_minutes between 10 and 130);
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'matches_cambios_chk') then
+    alter table public.matches add constraint matches_cambios_chk
+      check (substitutions_allowed between 0 and 11);
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'matches_no_contra_si_mismo') then
+    alter table public.matches add constraint matches_no_contra_si_mismo
+      check (opponent_team_id is null or opponent_team_id <> team_id);
+  end if;
+end
+$$;
+
+comment on column public.matches.opponent_team_id is
+  'El rival cuando tambien usa la app. Le da acceso de lectura al partido.';
+
+-- El equipo contrario tiene que poder ver el partido acordado.
+drop policy if exists matches_select on public.matches;
+create policy matches_select on public.matches
+  for select to anon, authenticated
+  using (
+    public.can_view_team(team_id)
+    or (opponent_team_id is not null and public.is_team_member(opponent_team_id))
+  );
+
+-- ---------------------------------------------------------------------
+-- 4. Retos
+-- ---------------------------------------------------------------------
+do $$
+begin
+  if not exists (select 1 from pg_type where typname = 'challenge_status') then
+    create type public.challenge_status as enum (
+      'pending', 'accepted', 'rejected', 'cancelled', 'expired', 'played');
+  end if;
+end
+$$;
+
+create table if not exists public.challenges (
+  id                    uuid primary key default gen_random_uuid(),
+  from_team_id          uuid not null references public.teams (id) on delete cascade,
+  to_team_id            uuid not null references public.teams (id) on delete cascade,
+  status                public.challenge_status not null default 'pending',
+  message               text check (char_length(message) <= 500),
+
+  -- Lo que se negocia entre capitanes.
+  proposed_kickoff_at   timestamptz not null,
+  venue                 text,
+  duration_minutes      smallint not null default 90
+                          check (duration_minutes between 10 and 130),
+  substitutions_allowed smallint not null default 5
+                          check (substitutions_allowed between 0 and 11),
+
+  match_id              uuid references public.matches (id) on delete set null,
+  created_by            uuid references auth.users (id) on delete set null,
+  responded_by          uuid references auth.users (id) on delete set null,
+  responded_at          timestamptz,
+  created_at            timestamptz not null default now(),
+  updated_at            timestamptz not null default now(),
+
+  constraint reto_no_contra_si_mismo check (from_team_id <> to_team_id)
+);
+
+-- Un solo reto abierto entre el mismo par de equipos, en cada sentido.
+create unique index if not exists challenges_uno_pendiente
+  on public.challenges (from_team_id, to_team_id) where status = 'pending';
+
+create index if not exists challenges_to_idx   on public.challenges (to_team_id, status);
+create index if not exists challenges_from_idx on public.challenges (from_team_id, status);
+
+-- ---------------------------------------------------------------------
+-- 5. Choque de horarios
+-- ---------------------------------------------------------------------
+-- SECURITY DEFINER porque tiene que mirar la agenda de los dos equipos,
+-- incluida la del rival, sin abrirle sus datos a nadie: solo devuelve
+-- true o false.
+create or replace function public.hay_conflicto_horario(
+  p_team_id   uuid,
+  p_inicio    timestamptz,
+  p_duracion  int default 90,
+  p_excluir_challenge uuid default null
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select exists (
+    -- Partidos ya agendados
+    select 1
+    from public.matches m
+    where (m.team_id = p_team_id or m.opponent_team_id = p_team_id)
+      and m.status in ('scheduled', 'live')
+      and tstzrange(m.kickoff_at,
+                    m.kickoff_at + make_interval(mins => m.duration_minutes))
+          && tstzrange(p_inicio, p_inicio + make_interval(mins => p_duracion))
+  )
+  or exists (
+    -- Retos ya aceptados que todavia no generaron partido
+    select 1
+    from public.challenges c
+    where (c.from_team_id = p_team_id or c.to_team_id = p_team_id)
+      and c.status = 'accepted'
+      and (p_excluir_challenge is null or c.id <> p_excluir_challenge)
+      and tstzrange(c.proposed_kickoff_at,
+                    c.proposed_kickoff_at + make_interval(mins => c.duration_minutes))
+          && tstzrange(p_inicio, p_inicio + make_interval(mins => p_duracion))
+  );
+$$;
+
+grant execute on function public.hay_conflicto_horario(uuid, timestamptz, int, uuid)
+  to authenticated;
+
+-- ---------------------------------------------------------------------
+-- 6. Chats
+-- ---------------------------------------------------------------------
+-- Chat interno del club. Nunca se abre al rival, ni siquiera con el
+-- club marcado como publico: por eso la politica exige ser miembro y no
+-- usa can_view_team.
+create table if not exists public.team_messages (
+  id         uuid primary key default gen_random_uuid(),
+  team_id    uuid not null references public.teams (id) on delete cascade,
+  match_id   uuid references public.matches (id) on delete set null,
+  user_id    uuid not null references auth.users (id) on delete cascade,
+  body       text not null check (char_length(btrim(body)) between 1 and 2000),
+  created_at timestamptz not null default now()
+);
+
+create index if not exists team_messages_idx
+  on public.team_messages (team_id, created_at desc);
+
+comment on table public.team_messages is
+  'Chat interno del equipo. Solo miembros, siempre, aunque el club sea publico.';
+
+-- Chat temporal entre los dos capitanes, para coordinar el partido.
+create table if not exists public.challenge_messages (
+  id           uuid primary key default gen_random_uuid(),
+  challenge_id uuid not null references public.challenges (id) on delete cascade,
+  user_id      uuid not null references auth.users (id) on delete cascade,
+  body         text not null check (char_length(btrim(body)) between 1 and 2000),
+  created_at   timestamptz not null default now()
+);
+
+create index if not exists challenge_messages_idx
+  on public.challenge_messages (challenge_id, created_at);
+
+-- Solo los dos capitanes, y solo mientras el reto siga abierto. Cuando
+-- se rechaza, se cancela o se juega, el chat se cierra.
+create or replace function public.puede_chatear_reto(p_challenge_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select exists (
+    select 1
+    from public.challenges c
+    where c.id = p_challenge_id
+      and c.status in ('pending', 'accepted')
+      and (public.can_captain(c.from_team_id) or public.can_captain(c.to_team_id))
+  );
+$$;
+
+grant execute on function public.puede_chatear_reto(uuid) to authenticated;
+
+-- ---------------------------------------------------------------------
+-- 7. RLS
+-- ---------------------------------------------------------------------
+alter table public.challenges         enable row level security;
+alter table public.challenge_messages enable row level security;
+alter table public.team_messages      enable row level security;
+
+-- Retos: los ven los dos clubes implicados; solo los capitanes actuan.
+drop policy if exists challenges_select on public.challenges;
+create policy challenges_select on public.challenges
+  for select to authenticated
+  using (public.is_team_member(from_team_id) or public.is_team_member(to_team_id));
+
+drop policy if exists challenges_insert on public.challenges;
+create policy challenges_insert on public.challenges
+  for insert to authenticated
+  with check (public.can_captain(from_team_id));
+
+drop policy if exists challenges_update on public.challenges;
+create policy challenges_update on public.challenges
+  for update to authenticated
+  using (public.can_captain(from_team_id) or public.can_captain(to_team_id))
+  with check (public.can_captain(from_team_id) or public.can_captain(to_team_id));
+
+drop policy if exists challenges_delete on public.challenges;
+create policy challenges_delete on public.challenges
+  for delete to authenticated
+  using (public.can_captain(from_team_id));
+
+-- Chat del reto: los dos capitanes, mientras este abierto.
+drop policy if exists challenge_messages_select on public.challenge_messages;
+create policy challenge_messages_select on public.challenge_messages
+  for select to authenticated
+  using (public.puede_chatear_reto(challenge_id));
+
+drop policy if exists challenge_messages_insert on public.challenge_messages;
+create policy challenge_messages_insert on public.challenge_messages
+  for insert to authenticated
+  with check (user_id = auth.uid() and public.puede_chatear_reto(challenge_id));
+
+drop policy if exists challenge_messages_delete on public.challenge_messages;
+create policy challenge_messages_delete on public.challenge_messages
+  for delete to authenticated
+  using (user_id = auth.uid());
+
+-- Chat interno: miembros del club. Nada de can_view_team aqui.
+drop policy if exists team_messages_select on public.team_messages;
+create policy team_messages_select on public.team_messages
+  for select to authenticated
+  using (public.is_team_member(team_id));
+
+drop policy if exists team_messages_insert on public.team_messages;
+create policy team_messages_insert on public.team_messages
+  for insert to authenticated
+  with check (user_id = auth.uid() and public.is_team_member(team_id));
+
+drop policy if exists team_messages_delete on public.team_messages;
+create policy team_messages_delete on public.team_messages
+  for delete to authenticated
+  using (user_id = auth.uid() or public.can_admin_team(team_id));
+
+-- ---------------------------------------------------------------------
+-- 8. RPC del flujo de reto
+-- ---------------------------------------------------------------------
+
+-- Retar a otro equipo.
+create or replace function public.retar_equipo(
+  p_from_team_id uuid,
+  p_to_team_id   uuid,
+  p_kickoff      timestamptz,
+  p_venue        text default null,
+  p_duracion     int  default 90,
+  p_cambios      int  default 5,
+  p_mensaje      text default null
+)
+returns public.challenges
+language plpgsql
+set search_path = public, pg_temp
+as $$
+declare
+  v_reto public.challenges;
+begin
+  if not public.can_captain(p_from_team_id) then
+    raise exception 'Solo el capitán puede retar a otro equipo'
+      using errcode = '42501';
+  end if;
+
+  if p_from_team_id = p_to_team_id then
+    raise exception 'Un equipo no puede retarse a sí mismo' using errcode = '23514';
+  end if;
+
+  if p_kickoff <= now() then
+    raise exception 'La fecha del partido tiene que ser futura' using errcode = '23514';
+  end if;
+
+  if public.hay_conflicto_horario(p_from_team_id, p_kickoff, p_duracion) then
+    raise exception 'Ya tienes un partido a esa hora' using errcode = '23505';
+  end if;
+
+  insert into public.challenges (
+    from_team_id, to_team_id, proposed_kickoff_at, venue,
+    duration_minutes, substitutions_allowed, message, created_by
+  )
+  values (
+    p_from_team_id, p_to_team_id, p_kickoff, p_venue,
+    p_duracion, p_cambios, p_mensaje, auth.uid()
+  )
+  returning * into v_reto;
+
+  return v_reto;
+end;
+$$;
+
+-- Ajustar los terminos mientras se negocia. Cualquiera de los dos
+-- capitanes, solo con el reto pendiente.
+create or replace function public.actualizar_terminos_reto(
+  p_challenge_id uuid,
+  p_kickoff      timestamptz default null,
+  p_venue        text        default null,
+  p_duracion     int         default null,
+  p_cambios      int         default null
+)
+returns public.challenges
+language plpgsql
+set search_path = public, pg_temp
+as $$
+declare
+  v_reto public.challenges;
+begin
+  select * into v_reto from public.challenges where id = p_challenge_id;
+
+  if v_reto.id is null then
+    raise exception 'El reto no existe' using errcode = 'P0002';
+  end if;
+
+  if v_reto.status <> 'pending' then
+    raise exception 'Este reto ya no está en negociación' using errcode = '23514';
+  end if;
+
+  if not (public.can_captain(v_reto.from_team_id)
+          or public.can_captain(v_reto.to_team_id)) then
+    raise exception 'Solo los capitanes pueden cambiar los términos'
+      using errcode = '42501';
+  end if;
+
+  update public.challenges
+  set proposed_kickoff_at   = coalesce(p_kickoff, proposed_kickoff_at),
+      venue                 = coalesce(p_venue, venue),
+      duration_minutes      = coalesce(p_duracion, duration_minutes),
+      substitutions_allowed = coalesce(p_cambios, substitutions_allowed),
+      updated_at            = now()
+  where id = p_challenge_id
+  returning * into v_reto;
+
+  return v_reto;
+end;
+$$;
+
+-- Aceptar o rechazar. Aceptar crea el partido con los terminos pactados
+-- y lo deja visible para los dos clubes.
+create or replace function public.responder_reto(
+  p_challenge_id uuid,
+  p_aceptar      boolean
+)
+returns public.challenges
+language plpgsql
+set search_path = public, pg_temp
+as $$
+declare
+  v_reto    public.challenges;
+  v_rival   text;
+  v_match   uuid;
+begin
+  select * into v_reto from public.challenges where id = p_challenge_id;
+
+  if v_reto.id is null then
+    raise exception 'El reto no existe' using errcode = 'P0002';
+  end if;
+
+  if v_reto.status <> 'pending' then
+    raise exception 'Este reto ya fue respondido' using errcode = '23514';
+  end if;
+
+  -- Responde el equipo retado.
+  if not public.can_captain(v_reto.to_team_id) then
+    raise exception 'Solo el capitán del equipo retado puede responder'
+      using errcode = '42501';
+  end if;
+
+  if not p_aceptar then
+    update public.challenges
+    set status = 'rejected', responded_by = auth.uid(), responded_at = now(),
+        updated_at = now()
+    where id = p_challenge_id
+    returning * into v_reto;
+    return v_reto;
+  end if;
+
+  -- Al aceptar hay que revisar la agenda de los dos, no solo la propia.
+  if public.hay_conflicto_horario(
+       v_reto.to_team_id, v_reto.proposed_kickoff_at,
+       v_reto.duration_minutes, p_challenge_id) then
+    raise exception 'Ya tienes un partido a esa hora' using errcode = '23505';
+  end if;
+
+  if public.hay_conflicto_horario(
+       v_reto.from_team_id, v_reto.proposed_kickoff_at,
+       v_reto.duration_minutes, p_challenge_id) then
+    raise exception 'El otro equipo ya tiene un partido a esa hora'
+      using errcode = '23505';
+  end if;
+
+  select name into v_rival from public.teams where id = v_reto.to_team_id;
+
+  -- El partido lo lleva quien reto (es su marcador); el retado queda
+  -- como opponent_team_id y por eso puede verlo.
+  insert into public.matches (
+    team_id, opponent_team_id, opponent_name, kickoff_at, venue,
+    duration_minutes, substitutions_allowed, status, is_home, created_by
+  )
+  values (
+    v_reto.from_team_id, v_reto.to_team_id, v_rival,
+    v_reto.proposed_kickoff_at, v_reto.venue,
+    v_reto.duration_minutes, v_reto.substitutions_allowed,
+    'scheduled', true, auth.uid()
+  )
+  returning id into v_match;
+
+  update public.challenges
+  set status = 'accepted', match_id = v_match, responded_by = auth.uid(),
+      responded_at = now(), updated_at = now()
+  where id = p_challenge_id
+  returning * into v_reto;
+
+  return v_reto;
+end;
+$$;
+
+create or replace function public.cancelar_reto(p_challenge_id uuid)
+returns public.challenges
+language plpgsql
+set search_path = public, pg_temp
+as $$
+declare
+  v_reto public.challenges;
+begin
+  select * into v_reto from public.challenges where id = p_challenge_id;
+
+  if v_reto.id is null then
+    raise exception 'El reto no existe' using errcode = 'P0002';
+  end if;
+
+  if not (public.can_captain(v_reto.from_team_id)
+          or public.can_captain(v_reto.to_team_id)) then
+    raise exception 'Solo los capitanes pueden cancelar' using errcode = '42501';
+  end if;
+
+  update public.challenges
+  set status = 'cancelled', responded_by = auth.uid(), responded_at = now(),
+      updated_at = now()
+  where id = p_challenge_id
+  returning * into v_reto;
+
+  return v_reto;
+end;
+$$;
+
+grant execute on function public.retar_equipo(uuid, uuid, timestamptz, text, int, int, text) to authenticated;
+grant execute on function public.actualizar_terminos_reto(uuid, timestamptz, text, int, int) to authenticated;
+grant execute on function public.responder_reto(uuid, boolean) to authenticated;
+grant execute on function public.cancelar_reto(uuid) to authenticated;
+
+-- ---------------------------------------------------------------------
+-- 9. Vista de retos recibidos, con aviso de choque
+-- ---------------------------------------------------------------------
+drop view if exists public.retos_recibidos;
+create view public.retos_recibidos
+with (security_invoker = true)
+as
+select
+  c.id,
+  c.from_team_id,
+  c.to_team_id,
+  t.name        as equipo_retador,
+  t.logo_url    as logo_retador,
+  c.status,
+  c.message,
+  c.proposed_kickoff_at,
+  c.venue,
+  c.duration_minutes,
+  c.substitutions_allowed,
+  c.match_id,
+  c.created_at,
+  -- Aviso, no bloqueo: el capitan decide, pero informado.
+  public.hay_conflicto_horario(
+    c.to_team_id, c.proposed_kickoff_at, c.duration_minutes, c.id) as choca_con_tu_agenda
+from public.challenges c
+join public.teams t on t.id = c.from_team_id;
+
+grant select on public.retos_recibidos to authenticated;
+
+-- ---------------------------------------------------------------------
+-- 10. Tiempo real y updated_at
+-- ---------------------------------------------------------------------
+-- El chat va por WebSocket, no por sondeo: es lo que lo hace inmediato.
+do $$
+declare
+  t text;
+begin
+  execute 'drop trigger if exists set_updated_at on public.challenges';
+  execute 'create trigger set_updated_at before update on public.challenges
+           for each row execute function public.set_updated_at()';
+
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+    foreach t in array array['team_messages', 'challenge_messages', 'challenges']
+    loop
+      if not exists (
+        select 1 from pg_publication_tables
+        where pubname = 'supabase_realtime'
+          and schemaname = 'public' and tablename = t
+      ) then
+        execute format('alter publication supabase_realtime add table public.%I', t);
+      end if;
+    end loop;
+  end if;
+end
+$$;
+
+alter table public.team_messages      replica identity full;
+alter table public.challenge_messages replica identity full;
+alter table public.challenges         replica identity full;
+
+
+-- #####################################################################
+-- # 20260823140000_08_acuerdo_y_borrado_chat.sql
+-- #####################################################################
+
+-- =====================================================================
+-- Anotar Gol - 08 | "Quedaron de acuerdo" y borrado del chat temporal
+-- =====================================================================
+-- Ajuste del flujo pedido el 23/08/2026:
+--
+--   El chat entre capitanes es temporal y existe solo para coordinar.
+--   Cuando pulsan "Quedaron de acuerdo", se avisa que el chat se va a
+--   borrar; si confirman, se borra, se registra el partido acordado y
+--   RECIEN AHI aparece en el cronograma.
+--
+-- El borrado no es cosmetico: el chat de coordinacion no tiene por que
+-- quedarse ocupando espacio para siempre.
+-- =====================================================================
+
+-- ---------------------------------------------------------------------
+-- 1. El chat muere con el reto
+-- ---------------------------------------------------------------------
+-- Cubre todas las salidas: acordado, rechazado, cancelado o vencido.
+-- Ponerlo en un trigger y no en cada RPC evita que un camino nuevo se
+-- olvide de limpiar.
+create or replace function public.borrar_chat_del_reto()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if new.status <> 'pending' and old.status = 'pending' then
+    delete from public.challenge_messages where challenge_id = new.id;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists challenges_borrar_chat on public.challenges;
+create trigger challenges_borrar_chat
+  after update on public.challenges
+  for each row execute function public.borrar_chat_del_reto();
+
+comment on function public.borrar_chat_del_reto is
+  'Borra el chat temporal en cuanto el reto deja de estar en negociación.';
+
+-- ---------------------------------------------------------------------
+-- 2. Confirmar el acuerdo
+-- ---------------------------------------------------------------------
+-- Es el boton "Quedaron de acuerdo". Puede pulsarlo cualquiera de los
+-- dos capitanes: para ese punto ya lo hablaron en el chat, y exigir dos
+-- confirmaciones agregaria un paso que nadie pidio.
+--
+-- Devuelve el reto ya cerrado, con match_id apuntando al partido nuevo.
+create or replace function public.confirmar_acuerdo(p_challenge_id uuid)
+returns public.challenges
+language plpgsql
+set search_path = public, pg_temp
+as $$
+declare
+  v_reto  public.challenges;
+  v_rival text;
+  v_match uuid;
+begin
+  select * into v_reto from public.challenges where id = p_challenge_id;
+
+  if v_reto.id is null then
+    raise exception 'El reto no existe' using errcode = 'P0002';
+  end if;
+
+  if v_reto.status <> 'pending' then
+    raise exception 'Este reto ya se cerró' using errcode = '23514';
+  end if;
+
+  if not (public.can_captain(v_reto.from_team_id)
+          or public.can_captain(v_reto.to_team_id)) then
+    raise exception 'Solo los capitanes pueden confirmar el acuerdo'
+      using errcode = '42501';
+  end if;
+
+  if v_reto.proposed_kickoff_at <= now() then
+    raise exception 'La fecha acordada ya pasó. Ajusten el horario primero.'
+      using errcode = '23514';
+  end if;
+
+  -- Se revisa la agenda de los dos, no solo la de quien pulsa.
+  if public.hay_conflicto_horario(
+       v_reto.from_team_id, v_reto.proposed_kickoff_at,
+       v_reto.duration_minutes, p_challenge_id) then
+    raise exception 'El equipo retador ya tiene un partido a esa hora'
+      using errcode = '23505';
+  end if;
+
+  if public.hay_conflicto_horario(
+       v_reto.to_team_id, v_reto.proposed_kickoff_at,
+       v_reto.duration_minutes, p_challenge_id) then
+    raise exception 'El equipo retado ya tiene un partido a esa hora'
+      using errcode = '23505';
+  end if;
+
+  select name into v_rival from public.teams where id = v_reto.to_team_id;
+
+  -- El partido lo lleva quien reto (es su marcador). El retado queda
+  -- como opponent_team_id, que es lo que le da acceso de lectura.
+  insert into public.matches (
+    team_id, opponent_team_id, opponent_name, kickoff_at, venue,
+    duration_minutes, substitutions_allowed, status, is_home, created_by
+  )
+  values (
+    v_reto.from_team_id, v_reto.to_team_id, v_rival,
+    v_reto.proposed_kickoff_at, v_reto.venue,
+    v_reto.duration_minutes, v_reto.substitutions_allowed,
+    'scheduled', true, auth.uid()
+  )
+  returning id into v_match;
+
+  -- Al salir de 'pending', el trigger de arriba borra el chat.
+  update public.challenges
+  set status       = 'accepted',
+      match_id     = v_match,
+      responded_by = auth.uid(),
+      responded_at = now(),
+      updated_at   = now()
+  where id = p_challenge_id
+  returning * into v_reto;
+
+  return v_reto;
+end;
+$$;
+
+grant execute on function public.confirmar_acuerdo(uuid) to authenticated;
+
+-- ---------------------------------------------------------------------
+-- 3. El cronograma
+-- ---------------------------------------------------------------------
+-- Solo partidos ya acordados. Un reto en negociacion NO aparece aca:
+-- entra al cronograma recien cuando los capitanes confirman.
+drop view if exists public.cronograma;
+create view public.cronograma
+with (security_invoker = true)
+as
+select
+  m.id,
+  m.team_id,
+  m.opponent_team_id,
+  m.opponent_name,
+  m.kickoff_at,
+  m.kickoff_at + make_interval(mins => m.duration_minutes) as termina_at,
+  m.venue,
+  m.competition,
+  m.status,
+  m.is_home,
+  m.duration_minutes,
+  m.substitutions_allowed,
+  m.team_score,
+  m.opponent_score,
+  local.name  as club_local,
+  visita.name as club_visitante,
+  -- true si el rival tambien usa la app (partido acordado por reto).
+  (m.opponent_team_id is not null) as rival_en_la_app
+from public.matches m
+join public.teams local on local.id = m.team_id
+left join public.teams visita on visita.id = m.opponent_team_id
+where m.status in ('scheduled', 'live');
+
+comment on view public.cronograma is
+  'Partidos agendados. Un reto entra aquí solo cuando los capitanes confirman.';
+
+grant select on public.cronograma to anon, authenticated;
+
+-- ---------------------------------------------------------------------
+-- 4. Vencimiento de retos viejos
+-- ---------------------------------------------------------------------
+-- Un reto cuya fecha ya paso sin respuesta no deberia seguir abierto ni
+-- conservando su chat. Se llama desde la app al abrir la bandeja.
+create or replace function public.vencer_retos_pasados()
+returns int
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_afectados int;
+begin
+  update public.challenges
+  set status = 'expired', updated_at = now()
+  where status = 'pending'
+    and proposed_kickoff_at < now();
+
+  get diagnostics v_afectados = row_count;
+  return v_afectados;
+end;
+$$;
+
+grant execute on function public.vencer_retos_pasados() to authenticated;
+
+
+-- #####################################################################
+-- # 20260823150000_09_fix_permisos_acuerdo.sql
+-- #####################################################################
+
+-- =====================================================================
+-- Anotar Gol - 09 | Corrección: quien crea el partido acordado
+-- =====================================================================
+-- Bug encontrado al probar el flujo completo contra la base real.
+--
+-- Sintoma:
+--   El capitán del equipo RETADO pulsa "Quedaron de acuerdo" y falla con
+--   "new row violates row-level security policy for table matches".
+--
+-- Causa:
+--   El partido se crea a nombre del equipo RETADOR (es su marcador),
+--   pero `confirmar_acuerdo` corria con los permisos de quien la llama.
+--   La politica de insercion de `matches` exige `can_edit_team(team_id)`,
+--   y el capitán retado no es miembro del club retador. RLS hacia bien
+--   su trabajo; la funcion estaba mal planteada.
+--
+-- Arreglo:
+--   Las dos funciones que cierran un reto pasan a SECURITY DEFINER. La
+--   autorizacion no desaparece: la hace la propia funcion, que exige ser
+--   capitán de uno de los dos equipos y solo puede crear un partido
+--   entre esos dos. Es el patron correcto para una operacion que cruza
+--   la frontera de dos clubes.
+--
+-- Alternativa descartada: aflojar la politica de `matches` para permitir
+-- insertar en nombre de otro club. Eso abriria un agujero para todo el
+-- mundo, no solo para este flujo.
+-- =====================================================================
+
+create or replace function public.confirmar_acuerdo(p_challenge_id uuid)
+returns public.challenges
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_reto  public.challenges;
+  v_rival text;
+  v_match uuid;
+begin
+  select * into v_reto from public.challenges where id = p_challenge_id;
+
+  if v_reto.id is null then
+    raise exception 'El reto no existe' using errcode = 'P0002';
+  end if;
+
+  if v_reto.status <> 'pending' then
+    raise exception 'Este reto ya se cerró' using errcode = '23514';
+  end if;
+
+  -- La autorizacion vive aqui, no en RLS: sin esto, SECURITY DEFINER
+  -- dejaria que cualquiera cerrara retos ajenos.
+  if not (public.can_captain(v_reto.from_team_id)
+          or public.can_captain(v_reto.to_team_id)) then
+    raise exception 'Solo los capitanes pueden confirmar el acuerdo'
+      using errcode = '42501';
+  end if;
+
+  if v_reto.proposed_kickoff_at <= now() then
+    raise exception 'La fecha acordada ya pasó. Ajusten el horario primero.'
+      using errcode = '23514';
+  end if;
+
+  if public.hay_conflicto_horario(
+       v_reto.from_team_id, v_reto.proposed_kickoff_at,
+       v_reto.duration_minutes, p_challenge_id) then
+    raise exception 'El equipo retador ya tiene un partido a esa hora'
+      using errcode = '23505';
+  end if;
+
+  if public.hay_conflicto_horario(
+       v_reto.to_team_id, v_reto.proposed_kickoff_at,
+       v_reto.duration_minutes, p_challenge_id) then
+    raise exception 'El equipo retado ya tiene un partido a esa hora'
+      using errcode = '23505';
+  end if;
+
+  select name into v_rival from public.teams where id = v_reto.to_team_id;
+
+  insert into public.matches (
+    team_id, opponent_team_id, opponent_name, kickoff_at, venue,
+    duration_minutes, substitutions_allowed, status, is_home, created_by
+  )
+  values (
+    v_reto.from_team_id, v_reto.to_team_id, v_rival,
+    v_reto.proposed_kickoff_at, v_reto.venue,
+    v_reto.duration_minutes, v_reto.substitutions_allowed,
+    'scheduled', true, auth.uid()
+  )
+  returning id into v_match;
+
+  -- Al salir de 'pending', el trigger borra el chat temporal.
+  update public.challenges
+  set status       = 'accepted',
+      match_id     = v_match,
+      responded_by = auth.uid(),
+      responded_at = now(),
+      updated_at   = now()
+  where id = p_challenge_id
+  returning * into v_reto;
+
+  return v_reto;
+end;
+$$;
+
+-- Mismo problema en responder_reto cuando se acepta.
+create or replace function public.responder_reto(
+  p_challenge_id uuid,
+  p_aceptar      boolean
+)
+returns public.challenges
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_reto public.challenges;
+begin
+  select * into v_reto from public.challenges where id = p_challenge_id;
+
+  if v_reto.id is null then
+    raise exception 'El reto no existe' using errcode = 'P0002';
+  end if;
+
+  if v_reto.status <> 'pending' then
+    raise exception 'Este reto ya fue respondido' using errcode = '23514';
+  end if;
+
+  -- Rechazar es potestad del equipo retado.
+  if not public.can_captain(v_reto.to_team_id) then
+    raise exception 'Solo el capitán del equipo retado puede responder'
+      using errcode = '42501';
+  end if;
+
+  if p_aceptar then
+    -- Aceptar es exactamente "quedaron de acuerdo": un solo camino, para
+    -- que el chat se borre y el partido se registre siempre igual.
+    return public.confirmar_acuerdo(p_challenge_id);
+  end if;
+
+  update public.challenges
+  set status = 'rejected', responded_by = auth.uid(), responded_at = now(),
+      updated_at = now()
+  where id = p_challenge_id
+  returning * into v_reto;
+
+  return v_reto;
+end;
+$$;
+
+grant execute on function public.confirmar_acuerdo(uuid) to authenticated;
+grant execute on function public.responder_reto(uuid, boolean) to authenticated;
+
+
+-- #####################################################################
+-- # 20260823160000_10_fix_ultimo_owner.sql
+-- #####################################################################
+
+-- =====================================================================
+-- Anotar Gol - 10 | Corrección: el guardián del último owner era muy duro
+-- =====================================================================
+-- Bug encontrado al limpiar datos de prueba.
+--
+-- Sintoma:
+--   Borrar la cuenta de una persona que es el unico `owner` de un club
+--   falla con "El equipo debe conservar al menos un owner".
+--
+-- Por que importa:
+--   No es solo un problema de pruebas. Google Play y la App Store exigen
+--   que una app con cuentas permita BORRAR la cuenta desde dentro. Con
+--   este trigger tal como estaba, el fundador de un club nunca podria
+--   darse de baja.
+--
+-- Arreglo:
+--   La proteccion sigue en pie para el caso que importa (que a alguien
+--   le quiten el ultimo owner por error), pero se levanta cuando la fila
+--   desaparece por arrastre: porque se borro el equipo, o porque se
+--   borro el usuario.
+-- =====================================================================
+
+create or replace function public.protect_last_owner()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_team_id uuid := coalesce(old.team_id, new.team_id);
+  v_owners  int;
+begin
+  -- Solo importa si estamos quitando o degradando a un owner.
+  if old.role <> 'owner' then
+    return coalesce(new, old);
+  end if;
+
+  if tg_op = 'UPDATE' and new.role = 'owner' then
+    return new;
+  end if;
+
+  -- Si el equipo entero se esta borrando (cascade), no hay nada que proteger.
+  if not exists (select 1 from public.teams where id = v_team_id) then
+    return coalesce(new, old);
+  end if;
+
+  -- Si la persona ya no existe, la fila cae por arrastre de auth.users.
+  -- Bloquearlo aqui impediria borrar la cuenta, que es un requisito de
+  -- las dos tiendas.
+  if tg_op = 'DELETE'
+     and not exists (select 1 from auth.users where id = old.user_id) then
+    return old;
+  end if;
+
+  select count(*) into v_owners
+  from public.team_members
+  where team_id = v_team_id and role = 'owner';
+
+  if v_owners <= 1 then
+    raise exception 'El equipo debe conservar al menos un owner'
+      using errcode = '23514',
+            hint = 'Nombra otro owner antes de quitar a este.';
+  end if;
+
+  return coalesce(new, old);
+end;
+$$;
+
+comment on function public.protect_last_owner is
+  'Impide quitar al último owner por error, pero no bloquea el borrado de la cuenta.';
+
+
+-- #####################################################################
+-- # 20260823170000_11_grupos_e_invitaciones.sql
+-- #####################################################################
+
+-- =====================================================================
+-- Anotar Gol - 11 | Grupos, invitaciones y aislamiento entre ligas
+-- =====================================================================
+-- Requisito del 23/08/2026:
+--
+--   Existen GRUPOS (ligas, torneos, barrios) y dentro de cada uno hay
+--   equipos. El grupo A y el grupo B no saben nada el uno del otro. Si
+--   eres del grupo A, solo ves informacion del grupo A. Por eso entrar
+--   a un grupo requiere una CLAVE DE INVITACION.
+--
+--   Una persona puede estar en varios grupos, con equipos distintos. Los
+--   choques de horario ENTRE grupos son problema suyo; los choques
+--   DENTRO de un mismo grupo no pueden pasar.
+--
+-- Esto convierte al grupo en la frontera de privacidad principal. Antes
+-- la frontera era el equipo; ahora el equipo vive dentro de un grupo.
+-- =====================================================================
+
+-- ---------------------------------------------------------------------
+-- 1. Grupos
+-- ---------------------------------------------------------------------
+create table if not exists public.groups (
+  id          uuid primary key default gen_random_uuid(),
+  name        text not null check (char_length(btrim(name)) between 2 and 80),
+  slug        text unique check (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$'),
+  description text,
+  created_by  uuid references auth.users (id) on delete set null,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+
+comment on table public.groups is
+  'Liga, torneo o comunidad. Frontera de privacidad: un grupo no ve a otro.';
+
+do $$
+begin
+  if not exists (select 1 from pg_type where typname = 'group_role') then
+    create type public.group_role as enum ('group_admin', 'member');
+  end if;
+end
+$$;
+
+create table if not exists public.group_members (
+  group_id  uuid not null references public.groups (id) on delete cascade,
+  user_id   uuid not null references auth.users (id) on delete cascade,
+  role      public.group_role not null default 'member',
+  joined_at timestamptz not null default now(),
+  primary key (group_id, user_id)
+);
+
+create index if not exists group_members_user_idx on public.group_members (user_id);
+
+-- Los equipos viven dentro de un grupo. Nullable a proposito: el club
+-- de ejemplo del seed no pertenece a ninguno y sigue funcionando suelto.
+alter table public.teams
+  add column if not exists group_id uuid references public.groups (id) on delete cascade;
+
+create index if not exists teams_group_idx on public.teams (group_id);
+
+-- ---------------------------------------------------------------------
+-- 2. Invitaciones
+-- ---------------------------------------------------------------------
+create table if not exists public.group_invites (
+  id         uuid primary key default gen_random_uuid(),
+  group_id   uuid not null references public.groups (id) on delete cascade,
+  code       text not null unique,
+  created_by uuid references auth.users (id) on delete set null,
+  max_uses   int,                      -- null = sin limite
+  uses       int not null default 0,
+  expires_at timestamptz,              -- null = sin vencimiento
+  is_active  boolean not null default true,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists group_invites_group_idx on public.group_invites (group_id);
+
+-- Codigo corto y legible en voz alta. Sin O/0 ni I/1 para que nadie lo
+-- dicte mal por WhatsApp.
+create or replace function public.generar_codigo_invitacion()
+returns text
+language plpgsql
+volatile
+as $$
+declare
+  v_alfabeto text := 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  v_codigo   text;
+  v_intento  int := 0;
+begin
+  loop
+    v_codigo := '';
+    for i in 1..8 loop
+      v_codigo := v_codigo ||
+        substr(v_alfabeto, 1 + floor(random() * length(v_alfabeto))::int, 1);
+    end loop;
+
+    exit when not exists (select 1 from public.group_invites gi where gi.code = v_codigo);
+
+    v_intento := v_intento + 1;
+    if v_intento > 50 then
+      raise exception 'No se pudo generar un código libre';
+    end if;
+  end loop;
+
+  return v_codigo;
+end;
+$$;
+
+-- ---------------------------------------------------------------------
+-- 3. Pertenencia y visibilidad
+-- ---------------------------------------------------------------------
+create or replace function public.es_miembro_del_grupo(p_group_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select exists (
+    select 1 from public.group_members gm
+    where gm.group_id = p_group_id and gm.user_id = auth.uid()
+  );
+$$;
+
+create or replace function public.es_admin_del_grupo(p_group_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select exists (
+    select 1 from public.group_members gm
+    where gm.group_id = p_group_id
+      and gm.user_id = auth.uid()
+      and gm.role = 'group_admin'
+  );
+$$;
+
+-- Compartimos grupo con este equipo?
+create or replace function public.comparte_grupo_con_equipo(p_team_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select exists (
+    select 1
+    from public.teams t
+    join public.group_members gm on gm.group_id = t.group_id
+    where t.id = p_team_id and gm.user_id = auth.uid()
+  );
+$$;
+
+grant execute on function public.es_miembro_del_grupo(uuid)      to authenticated;
+grant execute on function public.es_admin_del_grupo(uuid)        to authenticated;
+grant execute on function public.comparte_grupo_con_equipo(uuid) to authenticated;
+
+-- Regla de lectura actualizada. El orden importa para entenderla:
+--   1. Soy del equipo            -> veo todo.
+--   2. El equipo esta en un grupo -> lo veo solo si soy de ese grupo.
+--   3. El equipo NO esta en grupo -> vale el is_public de siempre
+--      (asi el club de ejemplo sigue abierto para demos).
+create or replace function public.can_view_team(p_team_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select exists (
+    select 1
+    from public.teams t
+    where t.id = p_team_id
+      and (
+        public.is_team_member(t.id)
+        or (t.group_id is not null and public.es_miembro_del_grupo(t.group_id))
+        or (t.group_id is null and t.is_public)
+      )
+  );
+$$;
+
+-- Buscar equipos para retar: solo dentro de tus grupos.
+drop policy if exists teams_select on public.teams;
+create policy teams_select on public.teams
+  for select to anon, authenticated
+  using (
+    public.is_team_member(id)
+    or (group_id is not null
+        and is_discoverable
+        and public.es_miembro_del_grupo(group_id))
+    or (group_id is null and is_public)
+  );
+
+-- ---------------------------------------------------------------------
+-- 4. RLS de grupos
+-- ---------------------------------------------------------------------
+alter table public.groups        enable row level security;
+alter table public.group_members enable row level security;
+alter table public.group_invites enable row level security;
+
+drop policy if exists groups_select on public.groups;
+create policy groups_select on public.groups
+  for select to authenticated
+  using (public.es_miembro_del_grupo(id));
+
+drop policy if exists groups_update on public.groups;
+create policy groups_update on public.groups
+  for update to authenticated
+  using (public.es_admin_del_grupo(id))
+  with check (public.es_admin_del_grupo(id));
+
+drop policy if exists groups_delete on public.groups;
+create policy groups_delete on public.groups
+  for delete to authenticated
+  using (public.es_admin_del_grupo(id));
+
+-- Ves a los miembros de tus grupos, no a los de otros.
+drop policy if exists group_members_select on public.group_members;
+create policy group_members_select on public.group_members
+  for select to authenticated
+  using (public.es_miembro_del_grupo(group_id));
+
+drop policy if exists group_members_update on public.group_members;
+create policy group_members_update on public.group_members
+  for update to authenticated
+  using (public.es_admin_del_grupo(group_id))
+  with check (public.es_admin_del_grupo(group_id));
+
+-- Un admin echa a alguien; cualquiera puede salirse solo.
+drop policy if exists group_members_delete on public.group_members;
+create policy group_members_delete on public.group_members
+  for delete to authenticated
+  using (public.es_admin_del_grupo(group_id) or user_id = auth.uid());
+
+-- Los codigos los ve y los crea el admin del grupo. Canjearlos se hace
+-- por RPC, no leyendo esta tabla: si no, cualquiera del grupo podria
+-- repartir invitaciones ajenas.
+drop policy if exists group_invites_select on public.group_invites;
+create policy group_invites_select on public.group_invites
+  for select to authenticated
+  using (public.es_admin_del_grupo(group_id));
+
+drop policy if exists group_invites_insert on public.group_invites;
+create policy group_invites_insert on public.group_invites
+  for insert to authenticated
+  with check (public.es_admin_del_grupo(group_id));
+
+drop policy if exists group_invites_update on public.group_invites;
+create policy group_invites_update on public.group_invites
+  for update to authenticated
+  using (public.es_admin_del_grupo(group_id))
+  with check (public.es_admin_del_grupo(group_id));
+
+drop policy if exists group_invites_delete on public.group_invites;
+create policy group_invites_delete on public.group_invites
+  for delete to authenticated
+  using (public.es_admin_del_grupo(group_id));
+
+-- ---------------------------------------------------------------------
+-- 5. RPC de grupos
+-- ---------------------------------------------------------------------
+create or replace function public.crear_grupo(
+  p_nombre      text,
+  p_descripcion text default null
+)
+returns public.groups
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_grupo public.groups;
+  v_base  text;
+  v_slug  text;
+  v_n     int := 0;
+begin
+  if auth.uid() is null then
+    raise exception 'Debes iniciar sesión' using errcode = '42501';
+  end if;
+
+  v_base := coalesce(nullif(public.slugify(p_nombre), ''), 'grupo');
+  v_slug := v_base;
+  while exists (select 1 from public.groups g where g.slug = v_slug) loop
+    v_n := v_n + 1;
+    v_slug := v_base || '-' || v_n;
+  end loop;
+
+  insert into public.groups (name, slug, description, created_by)
+  values (btrim(p_nombre), v_slug, p_descripcion, auth.uid())
+  returning * into v_grupo;
+
+  insert into public.group_members (group_id, user_id, role)
+  values (v_grupo.id, auth.uid(), 'group_admin');
+
+  -- Un grupo sin invitacion no sirve de nada: se crea una de una vez.
+  insert into public.group_invites (group_id, code, created_by)
+  values (v_grupo.id, public.generar_codigo_invitacion(), auth.uid());
+
+  return v_grupo;
+end;
+$$;
+
+create or replace function public.crear_invitacion(
+  p_group_id  uuid,
+  p_max_usos  int default null,
+  p_dias      int default null
+)
+returns public.group_invites
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_inv public.group_invites;
+begin
+  if not public.es_admin_del_grupo(p_group_id) then
+    raise exception 'Solo un administrador del grupo puede crear invitaciones'
+      using errcode = '42501';
+  end if;
+
+  insert into public.group_invites (group_id, code, created_by, max_uses, expires_at)
+  values (
+    p_group_id,
+    public.generar_codigo_invitacion(),
+    auth.uid(),
+    p_max_usos,
+    case when p_dias is null then null else now() + make_interval(days => p_dias) end
+  )
+  returning * into v_inv;
+
+  return v_inv;
+end;
+$$;
+
+-- Canjear el codigo. Es la puerta de entrada: sin esto, una cuenta nueva
+-- no pertenece a ningun grupo y no ve absolutamente nada.
+create or replace function public.unirse_con_codigo(p_codigo text)
+returns public.groups
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_inv   public.group_invites;
+  v_grupo public.groups;
+begin
+  if auth.uid() is null then
+    raise exception 'Debes iniciar sesión' using errcode = '42501';
+  end if;
+
+  select * into v_inv
+  from public.group_invites
+  where upper(btrim(code)) = upper(btrim(p_codigo));
+
+  if v_inv.id is null then
+    raise exception 'Esa clave de invitación no existe' using errcode = 'P0002';
+  end if;
+
+  if not v_inv.is_active then
+    raise exception 'Esa invitación fue desactivada' using errcode = '42501';
+  end if;
+
+  if v_inv.expires_at is not null and v_inv.expires_at < now() then
+    raise exception 'Esa invitación ya venció' using errcode = '42501';
+  end if;
+
+  if v_inv.max_uses is not null and v_inv.uses >= v_inv.max_uses then
+    raise exception 'Esa invitación ya se usó el máximo de veces'
+      using errcode = '42501';
+  end if;
+
+  select * into v_grupo from public.groups where id = v_inv.group_id;
+
+  -- Volver a canjear el mismo codigo no gasta un uso ni duplica nada.
+  if exists (
+    select 1 from public.group_members
+    where group_id = v_inv.group_id and user_id = auth.uid()
+  ) then
+    return v_grupo;
+  end if;
+
+  insert into public.group_members (group_id, user_id, role)
+  values (v_inv.group_id, auth.uid(), 'member');
+
+  update public.group_invites set uses = uses + 1 where id = v_inv.id;
+
+  return v_grupo;
+end;
+$$;
+
+-- Los grupos a los que perteneces, para el selector del perfil.
+create or replace function public.mis_grupos()
+returns table (
+  id          uuid,
+  name        text,
+  slug        text,
+  description text,
+  rol         public.group_role,
+  equipos     bigint,
+  joined_at   timestamptz
+)
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select g.id, g.name, g.slug, g.description, gm.role,
+         (select count(*) from public.teams t where t.group_id = g.id),
+         gm.joined_at
+  from public.group_members gm
+  join public.groups g on g.id = gm.group_id
+  where gm.user_id = auth.uid()
+  order by gm.joined_at;
+$$;
+
+grant execute on function public.crear_grupo(text, text)          to authenticated;
+grant execute on function public.crear_invitacion(uuid, int, int) to authenticated;
+grant execute on function public.unirse_con_codigo(text)          to authenticated;
+grant execute on function public.mis_grupos()                     to authenticated;
+
+-- ---------------------------------------------------------------------
+-- 6. Los retos no cruzan grupos
+-- ---------------------------------------------------------------------
+create or replace function public.retar_equipo(
+  p_from_team_id uuid,
+  p_to_team_id   uuid,
+  p_kickoff      timestamptz,
+  p_venue        text default null,
+  p_duracion     int  default 90,
+  p_cambios      int  default 5,
+  p_mensaje      text default null
+)
+returns public.challenges
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_reto     public.challenges;
+  v_grupo_a  uuid;
+  v_grupo_b  uuid;
+begin
+  if not public.can_captain(p_from_team_id) then
+    raise exception 'Solo el capitán puede retar a otro equipo'
+      using errcode = '42501';
+  end if;
+
+  if p_from_team_id = p_to_team_id then
+    raise exception 'Un equipo no puede retarse a sí mismo' using errcode = '23514';
+  end if;
+
+  select group_id into v_grupo_a from public.teams where id = p_from_team_id;
+  select group_id into v_grupo_b from public.teams where id = p_to_team_id;
+
+  -- Un grupo no ve al otro: tampoco puede retarlo.
+  if v_grupo_a is distinct from v_grupo_b then
+    raise exception 'Solo puedes retar a equipos de tu mismo grupo'
+      using errcode = '42501';
+  end if;
+
+  if p_kickoff <= now() then
+    raise exception 'La fecha del partido tiene que ser futura' using errcode = '23514';
+  end if;
+
+  if public.hay_conflicto_horario(p_from_team_id, p_kickoff, p_duracion) then
+    raise exception 'Ya tienes un partido a esa hora' using errcode = '23505';
+  end if;
+
+  insert into public.challenges (
+    from_team_id, to_team_id, proposed_kickoff_at, venue,
+    duration_minutes, substitutions_allowed, message, created_by
+  )
+  values (
+    p_from_team_id, p_to_team_id, p_kickoff, p_venue,
+    p_duracion, p_cambios, p_mensaje, auth.uid()
+  )
+  returning * into v_reto;
+
+  return v_reto;
+end;
+$$;
+
+grant execute on function public.retar_equipo(uuid, uuid, timestamptz, text, int, int, text)
+  to authenticated;
+
+-- ---------------------------------------------------------------------
+-- 7. Choques del jugador, grupo por grupo
+-- ---------------------------------------------------------------------
+-- Regla pedida: dentro de un mismo grupo, un jugador NUNCA puede tener
+-- dos partidos encimados. Entre grupos distintos si puede, y es asunto
+-- suyo resolverlo.
+create or replace function public.conflictos_del_jugador(p_user_id uuid default null)
+returns table (
+  group_id        uuid,
+  grupo           text,
+  match_a         uuid,
+  match_b         uuid,
+  inicio_a        timestamptz,
+  inicio_b        timestamptz,
+  equipo_a        text,
+  equipo_b        text,
+  mismo_grupo     boolean
+)
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  with agenda as (
+    select m.id, m.kickoff_at,
+           m.kickoff_at + make_interval(mins => m.duration_minutes) as fin,
+           t.id as team_id, t.name as equipo, t.group_id
+    from public.team_members tm
+    join public.teams t on t.id = tm.team_id
+    join public.matches m
+      on (m.team_id = t.id or m.opponent_team_id = t.id)
+    where tm.user_id = coalesce(p_user_id, auth.uid())
+      and m.status in ('scheduled', 'live')
+  )
+  select
+    a.group_id,
+    g.name,
+    a.id, b.id,
+    a.kickoff_at, b.kickoff_at,
+    a.equipo, b.equipo,
+    (a.group_id is not distinct from b.group_id)
+  from agenda a
+  join agenda b
+    on a.id < b.id
+   and tstzrange(a.kickoff_at, a.fin) && tstzrange(b.kickoff_at, b.fin)
+  left join public.groups g on g.id = a.group_id;
+$$;
+
+grant execute on function public.conflictos_del_jugador(uuid) to authenticated;
+
+comment on function public.conflictos_del_jugador is
+  'Partidos encimados del jugador. mismo_grupo = true es un error a corregir; false es aviso.';
+
+-- ---------------------------------------------------------------------
+-- 8. updated_at
+-- ---------------------------------------------------------------------
+drop trigger if exists set_updated_at on public.groups;
+create trigger set_updated_at before update on public.groups
+  for each row execute function public.set_updated_at();
 
