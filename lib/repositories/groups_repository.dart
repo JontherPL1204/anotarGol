@@ -35,7 +35,39 @@ class GroupsRepository {
     return Grupo.fromMap(Map<String, dynamic>.from(fila as Map));
   }
 
-  /// Canjea una clave. Devuelve el grupo al que acabas de entrar.
+  /// Qué hace una clave, sin gastarla. Es lo que permite confirmarle al
+  /// usuario qué le va a pasar antes de canjear.
+  Future<ClaveRevisada> revisarClave(String codigo) async {
+    final filas = await _db.rpc('revisar_clave', params: {
+      'p_codigo': codigo.trim().toUpperCase(),
+    });
+    final lista = filas as List;
+    if (lista.isEmpty) {
+      return const ClaveRevisada(valida: false, motivo: 'Esa clave no existe.');
+    }
+    return ClaveRevisada.fromMap(Map<String, dynamic>.from(lista.first as Map));
+  }
+
+  /// Canjea la clave sea del tipo que sea: de liga o de equipo. Quien
+  /// recibe un código por WhatsApp no tiene por qué saber cuál es.
+  Future<Map<String, dynamic>> canjearClave(String codigo) async {
+    final filas = await _db.rpc('canjear_clave', params: {
+      'p_codigo': codigo.trim().toUpperCase(),
+    });
+    final lista = filas as List;
+    if (lista.isEmpty) throw StateError('La clave no devolvió resultado');
+    return Map<String, dynamic>.from(lista.first as Map);
+  }
+
+  /// Dónde quedó parado el usuario, para decidir a qué pantalla va.
+  Future<MiSituacion> miSituacion() async {
+    final filas = await _db.rpc('mi_situacion');
+    final lista = filas as List;
+    if (lista.isEmpty) return const MiSituacion();
+    return MiSituacion.fromMap(Map<String, dynamic>.from(lista.first as Map));
+  }
+
+  /// Canjea una clave de grupo. Devuelve el grupo al que acabas de entrar.
   ///
   /// Volver a canjear la misma clave no gasta un uso ni duplica nada:
   /// la función de Postgres lo contempla.

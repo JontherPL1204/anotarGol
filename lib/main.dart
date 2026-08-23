@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:diego_javier_lopez_zambrano/homescreen.dart';
+import 'package:diego_javier_lopez_zambrano/screens/puerta.dart';
 import 'package:diego_javier_lopez_zambrano/core/session.dart';
 import 'package:diego_javier_lopez_zambrano/core/supabase_service.dart';
 
@@ -38,7 +38,8 @@ class MyApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: Homescreen(session: session),
+      // Puerta decide: sin liga, la clave; con liga, el inicio.
+      home: Puerta(session: session),
     );
   }
 }

@@ -1,6 +1,7 @@
 /// Barrel de modelos: `import 'package:.../models/models.dart';`
 library;
 
+export 'clave.dart';
 export 'enums.dart';
 export 'equipo_del_grupo.dart';
 export 'football_match.dart';

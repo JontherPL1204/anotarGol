@@ -20,12 +20,16 @@ retarse, pero el chat interno de cada club es solo de sus integrantes.
 
 ### Las claves
 
+El circuito es **dev → capitán → jugador**. El único que tiene contacto
+con el dev son los capitanes.
+
 | Clave | La reparte | Qué habilita |
 |---|---|---|
-| Administrador | el dev, al crear la liga | administrar el grupo y repartir las demás |
-| Capitán | el admin de la liga | entrar al grupo **y** fundar un equipo |
-| Jugador | el admin de la liga | entrar al grupo, sin fundar nada |
-| Equipo | el capitán | sumarse a un club concreto |
+| Liga | el dev, a cada capitán | entrar a la liga **y** fundar un equipo |
+| Equipo | el capitán, a su gente | sumarse a ese club |
+
+Un jugador nunca recibe una clave de liga: la de su equipo ya lo mete
+también en la liga. Por ahora solo existen dev, capitanes y jugadores.
 
 Son 8 caracteres en mayúscula, sin `O`/`0` ni `I`/`1`, para poder
 dictarlas en voz alta sin que nadie las escriba mal. Quien recibe un
@@ -143,11 +147,11 @@ lib/
   screens/       pantallas
   widgets/       componentes reutilizables
 supabase/
-  migrations/    30 migraciones, en orden
+  migrations/    33 migraciones, en orden
   seed.sql       club de ejemplo
   schema_completo.sql  las migraciones concatenadas (generado)
 docs/            plan, auditoría, diseño de retos y chat, evidencia académica
-test/            54 pruebas
+test/            70 pruebas
 ```
 
 Regla del proyecto: **los widgets no hablan con Supabase**. Pasan por los
@@ -158,7 +162,7 @@ tocan la red.
 
 ```bash
 flutter analyze     # sin issues
-flutter test        # 54 pruebas
+flutter test        # 70 pruebas
 ```
 
 ## Estado
@@ -167,9 +171,14 @@ Lo que funciona en la app: inicio con marcador en vivo, plantilla
 editable, equipos rivales con plantilla generada, ranking de goleadores e
 historial, registro con cédula, login y cuenta.
 
-Lo que está en la base pero todavía no tiene pantalla: grupos e
-invitaciones, retos entre capitanes, los dos chats, cronograma y tabla de
-posiciones.
+Ya hay puerta de entrada: quien inicia sesión sin liga cae en la casilla
+de la clave y no puede saltarla. La app le dice **qué hace esa clave
+antes de canjearla**, y después lo lleva a fundar su equipo o al equipo
+al que acaba de entrar.
+
+Lo que está en la base pero todavía no tiene pantalla: fundar equipo,
+retos entre capitanes, los dos chats, cronograma, tabla de posiciones y
+los controles del reloj.
 
 Antes de publicar en las tiendas hay pendientes que no son de código:
 política de privacidad, formulario de datos, y —por tener chat— la

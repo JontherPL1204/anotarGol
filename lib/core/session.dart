@@ -74,6 +74,48 @@ class Session extends ChangeNotifier {
   /// Solo tiene sentido ofrecer el selector si hay mas de uno.
   bool get puedeCambiarDeGrupo => _grupos.length > 1;
 
+  /// Donde quedo parado el usuario. Decide la pantalla de arranque.
+  MiSituacion situacion = const MiSituacion();
+
+  /// Que hace una clave, sin gastarla.
+  Future<ClaveRevisada> revisarClave(String codigo) async {
+    if (!hayBackend) {
+      return const ClaveRevisada(
+        valida: false,
+        motivo: 'La app está en modo local: no hay servidor configurado.',
+      );
+    }
+    try {
+      return await groups.revisarClave(codigo);
+    } catch (_) {
+      return const ClaveRevisada(
+        valida: false,
+        motivo: 'No se pudo comprobar la clave. Revisa tu conexión.',
+      );
+    }
+  }
+
+  /// Canjea la clave, sea de liga o de equipo, y actualiza la situacion.
+  Future<String?> canjearClave(String codigo) => _intentar(() async {
+        await groups.canjearClave(codigo);
+        await cargarGrupos();
+        await cargarSituacion();
+      });
+
+  Future<void> cargarSituacion() async {
+    if (!hayBackend || !haySesion) {
+      situacion = const MiSituacion();
+      notifyListeners();
+      return;
+    }
+    try {
+      situacion = await groups.miSituacion();
+    } catch (_) {
+      situacion = const MiSituacion();
+    }
+    notifyListeners();
+  }
+
   Future<void> cargarGrupos() async {
     if (!hayBackend || !haySesion) {
       _grupos = const [];
@@ -169,6 +211,7 @@ class Session extends ChangeNotifier {
       _rol = null;
     }
     await cargarGrupos();
+    await cargarSituacion();
     notifyListeners();
   }
 
@@ -223,6 +266,7 @@ class Session extends ChangeNotifier {
     _rol = null;
     _grupos = const [];
     _grupoActual = null;
+    situacion = const MiSituacion();
     notifyListeners();
   }
 
