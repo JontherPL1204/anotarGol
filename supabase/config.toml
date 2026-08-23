@@ -1,0 +1,5 @@
+# Configuracion minima para el CLI de Supabase.
+# Basta para `supabase link` y `supabase db push`.
+# Si quieres el archivo completo (puertos locales, auth, storage...),
+# corre `npx supabase init --force` y vuelve a pegar este project_id.
+project_id = "anotar-gol"

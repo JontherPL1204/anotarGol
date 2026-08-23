@@ -1,0 +1,13 @@
+# Copia este archivo como android/key.properties y completa los valores.
+# NO lo subas al repositorio: da acceso a firmar releases de tu app.
+#
+# Para generar el keystore (una sola vez, y guardalo en un lugar seguro:
+# si lo pierdes NO puedes volver a actualizar la app en Google Play):
+#
+#   keytool -genkey -v -keystore anotar-gol-release.jks \
+#     -keyalg RSA -keysize 2048 -validity 10000 -alias anotar-gol
+#
+storePassword=cambia-esto
+keyPassword=cambia-esto
+keyAlias=anotar-gol
+storeFile=C:/ruta/absoluta/a/anotar-gol-release.jks
