@@ -121,8 +121,26 @@ El banner de la app ya dice *"Seguimiento en vivo del partido"*, y la
 sección 4 lista "marcador en vivo" como visión de producto. Pero ninguna
 fase lo implementa: la fase 5 solo habla de "sincronizar datos".
 
-→ **Corregido**: `matches`, `match_events` y `players` publicados en
-Realtime, con `replica identity full` y streams en los repositorios.
+→ **Corregido en dos pasos.**
+
+Primero: `matches`, `match_events` y `players` publicados en Realtime,
+con `replica identity full` y streams en los repositorios. Eso resolvió
+la propagación — un gol aparece al instante en los demás dispositivos.
+
+Pero *"en vivo"* significaba solo eso. La app **no sabía en qué minuto
+iba el partido**: el minuto de cada gol se escribía a mano y nadie ponía
+el partido en `live` salvo manualmente. La hora y la duración que
+negocian los capitanes se guardaban, pero solo para planificar.
+
+Segundo (migración 29): el reloj. `started_at`, descanso, segundo tiempo
+y minutos agregados; `minuto_actual()` calcula el minuto real; un gol sin
+minuto indicado lo toma del reloj.
+
+**El partido no arranca solo al llegar la hora**, y es deliberado: los
+equipos llegan tarde, la cancha está ocupada, llueve. Un partido que se
+pusiera en marcha solo estaría contando minutos que nadie jugó y los
+goles quedarían en minutos falsos. En su lugar queda
+`listo_para_empezar` 30 minutos antes, y el capitán pulsa iniciar.
 
 ### 10. Sin migraciones ni entorno reproducible
 

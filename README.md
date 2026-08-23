@@ -54,8 +54,21 @@ equipo, pero no se le bloquea: es su decisión.
 5. El chat se borra, se registra el partido y **recién ahí** aparece en
    el cronograma.
 
-Durante el partido, el marcador va en vivo: registrar un gol lo actualiza
-en el celular de todos los que estén mirando.
+### El reloj
+
+A la hora acordada el partido queda **listo para empezar** y el capitán
+pulsa iniciar; el reloj cuenta desde ese momento real, no desde la hora
+pactada. Maneja descanso, segundo tiempo y minutos agregados.
+
+Un gol registrado sin indicar minuto **lo toma del reloj**: nadie tiene
+que calcular en qué minuto va.
+
+No arranca solo al llegar la hora, y es a propósito: los equipos llegan
+tarde y la cancha se ocupa. Un partido que se pusiera en marcha solo
+contaría minutos que nadie jugó, y los goles quedarían en minutos falsos.
+
+Todo esto va en vivo: registrar un gol lo actualiza en el celular de
+todos los que estén mirando.
 
 ## Decisiones que conviene conocer antes de tocar el código
 
@@ -130,7 +143,7 @@ lib/
   screens/       pantallas
   widgets/       componentes reutilizables
 supabase/
-  migrations/    29 migraciones, en orden
+  migrations/    30 migraciones, en orden
   seed.sql       club de ejemplo
   schema_completo.sql  las migraciones concatenadas (generado)
 docs/            plan, auditoría, diseño de retos y chat, evidencia académica
