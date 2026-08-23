@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart' show AuthException, Auth
 import '../models/models.dart';
 import '../repositories/repositories.dart';
 import 'app_env.dart';
+import 'cedula.dart';
 import 'supabase_service.dart';
 
 /// Quien esta usando la app y que puede hacer.
@@ -177,16 +178,39 @@ class Session extends ChangeNotifier {
   }) =>
       _intentar(() => auth.signIn(email: correo, password: clave));
 
+  /// La cédula es obligatoria al registrarse: es la identidad del
+  /// jugador y lo que le entrega sus fichas ya cargadas.
   Future<String?> registrarse({
     required String correo,
     required String clave,
+    required String cedula,
     String? nombreVisible,
-  }) =>
-      _intentar(() => auth.signUp(
-            email: correo,
-            password: clave,
-            displayName: nombreVisible,
-          ));
+  }) {
+    final problema = Cedula.error(cedula);
+    if (problema != null) return Future.value(problema);
+
+    return _intentar(() => auth.signUp(
+          email: correo,
+          password: clave,
+          displayName: nombreVisible,
+          cedula: cedula.trim(),
+        ));
+  }
+
+  /// Cuántas fichas se vincularon la última vez. La app lo usa para
+  /// decir "ya estás fichado en 2 equipos" tras registrarse.
+  int fichasVinculadas = 0;
+
+  /// Para quien ya tenía cuenta sin cédula.
+  Future<String?> registrarCedula(String cedula) {
+    final problema = Cedula.error(cedula);
+    if (problema != null) return Future.value(problema);
+
+    return _intentar(() async {
+      fichasVinculadas = await auth.registrarCedula(cedula.trim());
+      await cargarGrupos();
+    });
+  }
 
   Future<void> salir() async {
     if (!hayBackend) return;
@@ -247,6 +271,13 @@ class Session extends ChangeNotifier {
     }
     if (m.contains('email not confirmed')) {
       return 'Tienes que confirmar el correo antes de entrar.';
+    }
+    if (m.contains('cédula no es válida') || m.contains('cedula no es valida')) {
+      return 'Esa cédula no es válida. Revisa los 10 dígitos.';
+    }
+    if (m.contains('ya está registrada en otra cuenta')
+        || m.contains('esta registrada en otra cuenta')) {
+      return 'Esa cédula ya tiene una cuenta. Inicia sesión.';
     }
     if (m.contains('clave de invitación no existe')
         || m.contains('clave de invitacion no existe')) {

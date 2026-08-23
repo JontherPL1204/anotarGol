@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+import '../core/cedula.dart';
 import '../core/session.dart';
 
 /// Entrar o crear cuenta.
@@ -21,6 +23,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final _correo = TextEditingController();
   final _clave = TextEditingController();
   final _nombre = TextEditingController();
+  final _cedula = TextEditingController();
 
   bool _registrando = false;
   bool _verClave = false;
@@ -31,6 +34,7 @@ class _LoginScreenState extends State<LoginScreen> {
     _correo.dispose();
     _clave.dispose();
     _nombre.dispose();
+    _cedula.dispose();
     super.dispose();
   }
 
@@ -45,6 +49,7 @@ class _LoginScreenState extends State<LoginScreen> {
         ? await widget.session.registrarse(
             correo: correo,
             clave: clave,
+            cedula: _cedula.text.trim(),
             nombreVisible: _nombre.text.trim().isEmpty ? null : _nombre.text.trim(),
           )
         : await widget.session.entrar(correo: correo, clave: clave);
@@ -105,6 +110,28 @@ class _LoginScreenState extends State<LoginScreen> {
                   const SizedBox(height: 28),
 
                   if (_registrando) ...[
+                    TextFormField(
+                      controller: _cedula,
+                      keyboardType: TextInputType.number,
+                      textInputAction: TextInputAction.next,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.digitsOnly,
+                        LengthLimitingTextInputFormatter(10),
+                      ],
+                      decoration: const InputDecoration(
+                        labelText: 'Cédula',
+                        prefixIcon: Icon(Icons.badge_outlined),
+                        border: OutlineInputBorder(),
+                        helperText: 'Con ella recibes tu ficha si tu capitán ya te cargó',
+                        helperMaxLines: 2,
+                        counterText: '',
+                      ),
+                      // Se valida aquí y también en la base: una
+                      // validación que solo vive en el cliente no es
+                      // validación, cualquiera puede llamar a la API.
+                      validator: Cedula.error,
+                    ),
+                    const SizedBox(height: 16),
                     TextFormField(
                       controller: _nombre,
                       textInputAction: TextInputAction.next,
