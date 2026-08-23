@@ -113,7 +113,8 @@ ser capitán de un club y simple hincha de otro.
 misma.** Se enfrentarían y no se sabría de qué lado juega.
 
 **La `anon key` viaja dentro del APK.** Lo que protege los datos es RLS,
-no el secreto de esa clave. Hay 72 políticas y ninguna tabla sin RLS.
+no el secreto de esa clave. Ninguna tabla sin RLS, y sin sesión no se ve
+absolutamente nada: no hay acceso anónimo.
 
 ## Poner el proyecto a andar
 
@@ -167,7 +168,7 @@ lib/
   screens/       pantallas
   widgets/       componentes reutilizables
 supabase/
-  migrations/    35 migraciones, en orden
+  migrations/    37 migraciones, en orden
   seed.sql       club de ejemplo
   schema_completo.sql  las migraciones concatenadas (generado)
 docs/            plan, auditoría, diseño de retos y chat, evidencia académica

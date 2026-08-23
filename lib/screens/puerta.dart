@@ -4,6 +4,7 @@ import 'package:google_fonts/google_fonts.dart';
 import '../core/session.dart';
 import '../homescreen.dart';
 import 'clave_screen.dart';
+import 'fundar_equipo_screen.dart';
 
 /// Decide qué pantalla ve el usuario al abrir la app.
 ///
@@ -97,11 +98,17 @@ class _FundarEquipo extends StatelessWidget {
               ),
               const SizedBox(height: 24),
               FilledButton.icon(
-                onPressed: () {
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                    content: Text('La pantalla de fundar equipo es lo siguiente que falta.'),
-                  ));
-                },
+                onPressed: s.groupId == null
+                    ? null
+                    : () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => FundarEquipoScreen(
+                              session: session,
+                              groupId: s.groupId!,
+                            ),
+                          ),
+                        ),
                 icon: const Icon(Icons.shield),
                 label: const Text('Fundar mi equipo'),
                 style: FilledButton.styleFrom(
