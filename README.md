@@ -184,8 +184,8 @@ lib/
   screens/       pantallas
   widgets/       componentes reutilizables
 supabase/
-  migrations/    39 migraciones, en orden
-  seed.sql       liga de prueba con el club de ejemplo dentro
+  migrations/    40 migraciones, en orden
+  seed.sql       liga de prueba con dos equipos listos para jugar
   seed.sql       club de ejemplo
   schema_completo.sql  las migraciones concatenadas (generado)
 docs/            plan, auditoría, diseño de retos y chat, evidencia académica

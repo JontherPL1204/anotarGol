@@ -205,6 +205,47 @@ values
    'goal', 'them', 80, 'Penal')
 on conflict (id) do nothing;
 
+
+-- ---------------------------------------------------------------------
+-- Segundo equipo de la liga
+-- ---------------------------------------------------------------------
+-- Una liga con un solo equipo no sirve para probar nada: no hay a quien
+-- retar. Este es el rival del partido que ya estaba programado.
+insert into public.teams (id, group_id, name, short_name, slug,
+                          primary_color, secondary_color, is_public)
+values (
+  'b0000000-0000-4000-8000-0000000000f2',
+  '9c000000-0000-4000-8000-000000000001',
+  'Clásicos FC',
+  'CLA',
+  'clasicos-fc',
+  '#1565C0',
+  '#FFFFFF',
+  false
+)
+on conflict (id) do nothing;
+
+insert into public.players (id, team_id, number, full_name, position, position_detail, cedula)
+values
+  ('c0000000-0000-4000-8000-000000000001', 'b0000000-0000-4000-8000-0000000000f2',  1, 'Iván Cabezas', 'GK', 'Portero', '0920450004'),
+  ('c0000000-0000-4000-8000-000000000002', 'b0000000-0000-4000-8000-0000000000f2',  2, 'Bryan Quiñónez', 'DF', 'Lateral Derecho', '0920450012'),
+  ('c0000000-0000-4000-8000-000000000003', 'b0000000-0000-4000-8000-0000000000f2',  3, 'Marlon Solís', 'DF', 'Defensa Central', '0920450020'),
+  ('c0000000-0000-4000-8000-000000000004', 'b0000000-0000-4000-8000-0000000000f2',  4, 'Adrián Vera', 'DF', 'Defensa Central', '0920450038'),
+  ('c0000000-0000-4000-8000-000000000005', 'b0000000-0000-4000-8000-0000000000f2',  5, 'Kevin Palacios', 'DF', 'Lateral Izquierdo', '0920450046'),
+  ('c0000000-0000-4000-8000-000000000006', 'b0000000-0000-4000-8000-0000000000f2',  6, 'Nixon Chalá', 'MF', 'Mediocampista Defensivo', '0920450053'),
+  ('c0000000-0000-4000-8000-000000000007', 'b0000000-0000-4000-8000-0000000000f2',  7, 'Erick Montaño', 'MF', 'Mediocampista Central', '0920450061'),
+  ('c0000000-0000-4000-8000-000000000008', 'b0000000-0000-4000-8000-0000000000f2',  8, 'Joao Preciado', 'MF', 'Mediocampista Ofensivo', '0920450079'),
+  ('c0000000-0000-4000-8000-000000000009', 'b0000000-0000-4000-8000-0000000000f2',  9, 'Anderson Angulo', 'FW', 'Extremo Derecho', '0920450087'),
+  ('c0000000-0000-4000-8000-000000000010', 'b0000000-0000-4000-8000-0000000000f2', 10, 'Michael Corozo', 'FW', 'Delantero Centro', '0920450095'),
+  ('c0000000-0000-4000-8000-000000000011', 'b0000000-0000-4000-8000-0000000000f2', 11, 'Steven Arroyo', 'FW', 'Extremo Izquierdo', '0920450103')
+on conflict (id) do nothing;
+
+-- El partido del domingo deja de ser contra un nombre suelto: enfrenta a
+-- dos equipos de la liga, y por eso los dos lo ven en su cronograma.
+update public.matches
+set opponent_team_id = 'b0000000-0000-4000-8000-0000000000f2'
+where id = 'd0000000-0000-4000-8000-000000000002';
+
 -- ---------------------------------------------------------------------
 -- Verificacion rapida
 -- ---------------------------------------------------------------------
@@ -219,8 +260,20 @@ order by m.kickoff_at;
 
 -- La clave para entrar a la liga de prueba. Anotala: es distinta en
 -- cada instalacion.
-select g.name as liga, t.name as equipo, gi.code as clave_de_capitan
+select
+  t.numero_en_grupo as n,
+  t.name            as equipo,
+  count(p.*) filter (where p.cedula is not null) as con_cedula,
+  public.equipo_habilitado(t.id) as habilitado
+from public.teams t
+left join public.players p on p.team_id = t.id
+where t.group_id = '9c000000-0000-4000-8000-000000000001'
+group by t.id, t.numero_en_grupo, t.name
+order by t.numero_en_grupo;
+
+-- La clave para entrar a la liga de prueba. Anotala: es distinta en
+-- cada instalacion.
+select g.name as liga, gi.code as clave_de_capitan
 from public.groups g
-join public.teams t on t.group_id = g.id
 join public.group_invites gi on gi.group_id = g.id
 where g.id = '9c000000-0000-4000-8000-000000000001';
