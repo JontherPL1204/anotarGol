@@ -42,12 +42,16 @@ class TeamsRepository {
 
   /// Crea equipo, membresia de owner y ajustes en una sola transaccion.
   /// Se hace por RPC porque RLS no permitiria los tres pasos por separado.
+  ///
+  /// [groupId] mete el equipo dentro de una liga. Tienes que pertenecer
+  /// a ella: la funcion lo comprueba y falla si no.
   Future<Team> createTeam({
     required String name,
     String? shortName,
     String primaryColorHex = '#1B5E20',
     String secondaryColorHex = '#FFD700',
-    bool isPublic = true,
+    bool isPublic = false,
+    String? groupId,
   }) async {
     final row = await _db.rpc('create_team', params: {
       'p_name': name,
@@ -55,6 +59,7 @@ class TeamsRepository {
       'p_primary_color': primaryColorHex,
       'p_secondary_color': secondaryColorHex,
       'p_is_public': isPublic,
+      'p_group_id': groupId,
     });
     return Team.fromMap(Map<String, dynamic>.from(row as Map));
   }
